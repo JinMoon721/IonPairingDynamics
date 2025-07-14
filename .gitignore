@@ -23,7 +23,6 @@ build/
 dist/
 CMakeFiles/
 CMakeCache.txt
-Makefile
 cmake_install.cmake
 
 # === VS Code / CLion / IDEs ===
