@@ -17,7 +17,7 @@ __global__ void computeCommittorsKernel(const int* data1, const int* time1, cons
     n1=n2=n3=n4=n5=0;
     for (int traj = 0 ; traj < numTraj; traj++) {
       currentIndex = idx*numTraj + traj;
-      if ( time1[currentIndex] != -1 && btime3[currentIndex] != -1 ){ 
+      if ( time1[currentIndex] != -1 && btime3[currentIndex] != -1 && time3[currentIndex] != -1 && btime1[currentIndex] != -1 ){ 
         den += 1;
         if ( (time3[currentIndex] > time1[currentIndex] )  ) { // forwardward committor
           n1+=1;
@@ -88,7 +88,7 @@ void computeCommittors(const std::vector<int>& h_data1, const std::vector<int>& 
   cudaFree(d_result);
 }
 
-__global__ void passageTimeKernelA(float* dist,  int* data, int* time, int* btime, float rcut, size_t numTraj, size_t numSteps) {
+__global__ void passageTimeKernel(float* dist,  int* data, int* time, int* btime, float rcut, size_t numTraj, size_t numSteps) {
   size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
   if (idx < numTraj) {
     size_t index, lastindex;
@@ -124,41 +124,6 @@ __global__ void passageTimeKernelA(float* dist,  int* data, int* time, int* btim
   }
 }
 
-__global__ void passageTimeKernelB(float* dist, int* data, int* time, int* btime, float rcut, size_t numTraj, size_t numSteps) {
-  size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
-  if (idx < numTraj) {
-    size_t index, lastindex;
-    if ((dist[idx] <= rcut) ) {
-      data[idx] = 0;
-    } else {
-      data[idx]=1;
-    }
-    time[idx]=0;
-    btime[idx]=-1;
-    lastindex=0;
-    for (size_t i=1; i<numSteps; i++){
-      index = i*numTraj+idx;
-      if ( ( (dist[index - numTraj] > rcut)  && (  dist[index] <= rcut ) ) ||
-           ( (dist[index] > rcut ) && (  dist[index-numTraj] <= rcut  ))){ 
-        data[index] = data[index-numTraj] + 1;
-        for (size_t k=lastindex; k< i; k++) {
-          time[ k*numTraj + idx] = i;
-        }
-        for (size_t k=lastindex+1; k< i; k++) {
-          btime[ k*numTraj + idx] = btime[ lastindex*numTraj + idx];
-        }
-        btime[i*numTraj + idx]=i;
-        lastindex=i;
-      } else{
-        data[index] = data[index-numTraj];
-      }
-    }
-    for( size_t k=lastindex; k< numSteps; k++) {
-      time[ k*numTraj + idx] = -1;
-      btime[ k*numTraj + idx] = btime[lastindex*numTraj + idx];
-    }
-  }
-}
 
 void findPassageTime(float rcut, size_t numTraj, size_t numSteps, std::vector<float>& fdist, std::vector<int>& data, std::vector<int>& time, std::vector<int>& btime){
   size_t dataSize = data.size();
@@ -179,11 +144,7 @@ void findPassageTime(float rcut, size_t numTraj, size_t numSteps, std::vector<fl
   
   int threadsPerBlock = 8;
   int blocksPerGrid = (numTraj + threadsPerBlock-1) / threadsPerBlock;
-  if ( rcut > 20) {
-    passageTimeKernelA<<<blocksPerGrid, threadsPerBlock>>>(d_dist, d_data, d_time, d_btime, rcut, numTraj, numSteps);
-  } else{
-    passageTimeKernelB<<<blocksPerGrid, threadsPerBlock>>>(d_dist, d_data, d_time, d_btime, rcut, numTraj, numSteps);
-  }
+  passageTimeKernel<<<blocksPerGrid, threadsPerBlock>>>(d_dist, d_data, d_time, d_btime, rcut, numTraj, numSteps);
 
   cudaMemcpy(data.data(), d_data, dataBytes, cudaMemcpyDeviceToHost);
   cudaMemcpy(time.data(), d_time, dataBytes, cudaMemcpyDeviceToHost);
@@ -206,7 +167,7 @@ std::vector<std::vector<float>> readBTrajFromFile(const std::string& filename) {
     in.read(reinterpret_cast<char*>(matrix[i].data()), sizeof(float)*cols);
    }
   in.close();
-  std::cout << "file reading done" << std::endl;
+//  std::cout << "file reading done" << std::endl;
   return matrix;
 }
 
@@ -254,99 +215,6 @@ void printFile(std::string& file, std::vector<float>& x, std::vector<float>& y){
     out << std::fixed << std::setprecision(12) << x[i] << " " << y[i]  << std::endl;
   }
   out.close();
-}
-
-__global__ void computeAbsCorrKernel(const int* data1, const int* time1, const int* btime1,
-                                       const int* data3, const int* time3, const int* btime3,
-                                       const float* dist, const float* pdist, int* nresult, int* dresult, size_t numSteps, size_t numTraj, size_t numLag, const int* dt){
-  size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < numSteps) {
-    size_t lag,  initIndex, lastIndex, num, den;
-    int check, currentTime, nextTime;
-    size_t currentIndex;
-    for (size_t lagind = 0 ; lagind < numLag; lagind++) {
-      lag = dt[lagind];
-      if (idx < numSteps - lag) {
-        num = 0;
-        den = 0;
-        for (size_t traj = 0 ; traj < numTraj; traj++) {
-          currentTime=idx;
-          currentIndex = currentTime*numTraj + traj;
-          //if (( btime3[currentIndex] < btime1[currentIndex] ) && (btime3[currentIndex] != -1 ) && (dist[currentIndex] >= 65.0) && (data3[currentIndex] % 2 == 0)) { // conditioned on 1-q- near the boundary
-          if ( ( btime3[currentIndex] < btime1[currentIndex] ) && (btime3[currentIndex] != -1 ) && 
-              ( ((dist[currentIndex] >= 65.0) && (dist[currentIndex] <= 70.0)) || ( pdist[currentIndex] >= 25.0 && pdist[currentIndex] <= 35.0 && dist[currentIndex] > 70.0)  ) )  { // conditioned on 1-q- near the boundary
-            den +=1;
-            if (time1[currentIndex] < lag+idx) {
-              num +=1;
-            }
-          }
-        }
-        atomicAdd(&dresult[lagind], den);
-        atomicAdd(&nresult[lagind], num);
-      }
-    }
-  }
-}
-
-
-void computeAbsCorr(const std::vector<int>& dt, const std::vector<int>& h_data1, const std::vector<int>& h_time1,  const std::vector<int>& h_btime1,
-                                                  const std::vector<int>& h_data3, const std::vector<int>& h_time3,  const std::vector<int>& h_btime3,
-                                                  const std::vector<float>& h_dist, const std::vector<float>& h_pdist, size_t numLag, size_t numSteps, size_t numTraj, 
-                                                  std::vector<float>& corr) {
-  // allocate GPU memory and initialize
-  int *d_dresult, *d_nresult;
-  int *d_data1, *d_data3, *d_dt, *d_time1, *d_btime1, *d_time3, *d_btime3;
-  float *d_dist, *d_pdist;
-  cudaMalloc(&d_data1, h_data1.size() * sizeof(int));
-  cudaMalloc(&d_time1, h_time1.size() * sizeof(int));
-  cudaMalloc(&d_btime1, h_btime1.size() * sizeof(int));
-  cudaMalloc(&d_data3, h_data3.size() * sizeof(int));
-  cudaMalloc(&d_time3, h_time3.size() * sizeof(int));
-  cudaMalloc(&d_btime3, h_btime3.size() * sizeof(int));
-  cudaMalloc(&d_dist, h_dist.size() * sizeof(float));
-  cudaMalloc(&d_pdist, h_pdist.size() * sizeof(float));
-  cudaMalloc(&d_dt, dt.size() * sizeof(int));
-  cudaMalloc(&d_dresult, numLag * sizeof(int));
-  cudaMalloc(&d_nresult, numLag * sizeof(int));
-
-  cudaMemset(d_dresult, 0, numLag * sizeof(int));
-  cudaMemset(d_nresult, 0, numLag * sizeof(int));
-  cudaMemcpy(d_data1, h_data1.data(), h_data1.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_time1, h_time1.data(), h_time1.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_btime1, h_btime1.data(), h_btime1.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_data3, h_data3.data(), h_data3.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_time3, h_time3.data(), h_time3.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_btime3, h_btime3.data(), h_btime3.size() * sizeof(int), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_dist, h_dist.data(), h_dist.size() * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_pdist, h_pdist.data(), h_pdist.size() * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_dt, dt.data(), dt.size() * sizeof(int), cudaMemcpyHostToDevice);
-
-  dim3 threadsPerBlock(256);
-  dim3 numBlocks((numSteps + threadsPerBlock.x -1) / threadsPerBlock.x);
-
-  computeAbsCorrKernel<<<numBlocks, threadsPerBlock>>>( d_data1, d_time1, d_btime1, d_data3, d_time3, d_btime3, d_dist, d_pdist, d_nresult, d_dresult, numSteps, numTraj, numLag, d_dt);
-
-  std::vector<int> numerator(numLag, 0);
-  std::vector<int> denominator(numLag, 0);
-
-  cudaMemcpy( numerator.data(), d_nresult, numLag*sizeof(int), cudaMemcpyDeviceToHost);
-  cudaMemcpy( denominator.data(), d_dresult, numLag*sizeof(int), cudaMemcpyDeviceToHost);
-
-  std::transform(numerator.begin(), numerator.end(), denominator.begin(), corr.begin(), 
-      [](float a, float b) {
-        return b != 0.0 ? a/b : 0.0;
-        });
-
-  cudaFree(d_data1);
-  cudaFree(d_time1);
-  cudaFree(d_btime1);
-  cudaFree(d_data3);
-  cudaFree(d_time3);
-  cudaFree(d_btime3);
-  cudaFree(d_dist);
-  cudaFree(d_pdist);
-  cudaFree(d_dresult);
-  cudaFree(d_nresult);
 }
 
 
@@ -399,40 +267,95 @@ std::vector<T> removeDuplicates(const std::vector<T>& input) {
   return std::vector<T>(uniqueSet.begin(), uniqueSet.end());
 }
 
+float mean(const std::vector<float>& data) {
+  float sum = 0.0;
+  for (float x : data) sum += x;
+  return sum/data.size();
+}
+
+float variance ( const std::vector<float>& data) {
+  float mu = mean(data);
+  float var = 0.0;
+  for ( float x : data) var += (x-mu) * (x-mu) ;
+  return var/( data.size() -1);
+}
+
+float blockAverage( const std::vector<float>& data) {
+  std::vector<float> blockData = data;
+  std::vector<float> semList;
+  std::vector<int> blockSizes;
+
+  int blockSize = 1;
+  int level=0;
+
+  while ( blockData.size() >= 2) {
+    int nBlocks = blockData.size() / 2;
+    // new block
+    std::vector<float> newBlockData(nBlocks);
+    for ( int i =0 ; i<nBlocks; i++ ) {
+      newBlockData[i] = 0.5 * ( blockData[2*i] + blockData[2*i+1] );
+    }
+    float var = variance(newBlockData);
+    float sem = std::sqrt(var / (nBlocks)); 
+
+    semList.push_back(sem);
+    blockSizes.push_back(blockSize);
+  //  std::cout << blockSize << "\t\t" << nBlocks << "\t\t" << std::setprecision(6) << sem << "\n";
+
+    blockData = newBlockData;
+    blockSize *= 2;
+    ++level;
+  }
+  int stabilityWindow=3;
+  float tolerance=0.05;
+  float finalSEM=0;
+  for ( size_t i =0; i+stabilityWindow <= semList.size(); ++i){
+    bool stable = true;
+    float ref = semList[i];
+    for ( size_t j=0; j<stabilityWindow; ++j){
+      float diff = std::fabs(semList[i+j] - ref);
+      if ( diff/ref > tolerance) {
+        stable = false;
+        break;
+      }
+    }
+    if (stable){
+//      std::cout << "\nSEM plateau detected starting at block step " <<i << " (stable for " << stabilityWindow << " sizes)\n";
+      finalSEM=semList[i];
+      break;
+    }
+  }
+  if (finalSEM==0) {
+    //std::cout << semList[0] << "\t\t" << semList[1];
+    std::cout << "\nERROR. SEM plateua not detected. Use the largest error\n";
+    finalSEM=*std::max_element(semList.begin(), semList.end());
+    if (finalSEM > 1e6 ) {
+      finalSEM = mean(data);
+      std::cout << "\n\nZero Err occur, replace by mean\n\n";
+    }
+    //finalSEM = semList.back();
+    //std::cout << "Estimated mean: " << finalSEM << "\t\tSEM: " << "\n";
+//    std::cout << "Estimated mean: " << mean(data) << "\t\tmaxSEM: " << finalSEM << "\t\tlastSEM: " << semList.back() <<"\n";
+  }
+//  std::cout << "Estimated mean: " << mean(data) << "\t\tSEM: " << finalSEM << "\n";
+  return finalSEM;
+}
 
 
 int main(int argc, char* argv[]) {
-  if (argc != 7 ) {
+  if (argc != 6 ) {
     std::cerr << "Error: Not enough arguments.\n" ;
-    std::cerr << "Usage : " << argv[0] << " density field cutoff_in(A) cutoff_out(A) box(A) timestep(ps) \n";
+    std::cerr << "Usage : " << argv[0] << " density field cutoff_in(A) cutoff_out(A) timestep(ps) \n";
     return 1;
   }
-  int numtraj=1;
-  int numsnap;
   std::string density=argv[1];
   std::string field=argv[2];
-  std::map<std::string, float> str2float = {
-    {"00", 0.0},
-    {"10", 0.23},
-    {"50", 1.15},
-    {"100", 2.3} 
-  };
-  float efield = str2float[field]; //kcal/molA
-
   float CUTOFFin = std::stof(argv[3]);
   float CUTOFFout = std::stof(argv[4]);
-  float box=std::stof(argv[5]);
-  float timestep=std::stof(argv[6]); // 50 fs  = 0.05 ps 
+  float timestep=std::stof(argv[5]); // 50 fs  = 0.05 ps 
   
-  int numatoms;
-  if ( density == "05" ) {
-    numatoms = 16;
-  } else {
-    numatoms=32;
-  }
-
   std::vector<std::vector<float>> dist;
-  std::string distFile = "../cnnTraj/trajD" + density + "E" + field + ".binary";
+  std::string distFile = "../data/cnnDist/distD" + density + "E" + field + ".binary";
   dist=readBTrajFromFile(distFile);
   std::vector<float> fdist;
   for (size_t i =0; i<dist.size(); i++) {
@@ -451,13 +374,14 @@ int main(int argc, char* argv[]) {
   size_t numSample = fdist.size();
   size_t numSteps = numSample / numTraj;
 
-  std::cout << "Traj: " << numTraj << " Sample: " << numSample << " #snaps: " << numSteps << " Time : " << numSteps*timestep/1000 << "ns"  << std::endl;
+  std::cout << "TPT-based Rate Measurement Starts...\n";
+  std::cout << "Read Trajectory of length " << numSteps*timestep/1000 << "ns\n\n";
 
 
-  // first passage time for A: nearest neighbor anion is bare and > 70. B: dipole is also bare
+  // first passage time for inner cutoff domain
   float rcut;
   rcut = CUTOFFin;
-  std::vector<int> h_data1(numSample, 0);  // indicator function  odd in A state, even in A^C
+  std::vector<int> h_data1(numSample, 0);  // indicator function  odd if r> rcut
   std::vector<int> h_time1(numSample, 0); // first entrance time
   std::vector<int> h_btime1(numSample, 0); // last exit time
   findPassageTime(rcut, numTraj, numSteps, fdist, h_data1, h_time1, h_btime1);
@@ -466,187 +390,257 @@ int main(int argc, char* argv[]) {
 
 
   rcut = CUTOFFout;
-  std::vector<int> h_data3(numSample, 0); // indicator function  even in B state, odd in B^C
+  std::vector<int> h_data3(numSample, 0); // indicator function  odd if r>rcut
   std::vector<int> h_time3(numSample, 0); // first entrance time 
   std::vector<int> h_btime3(numSample, 0); // last exit time from
   findPassageTime(rcut, numTraj, numSteps, fdist, h_data3, h_time3, h_btime3);
   std::cout << "finding first passage time at " << rcut << " done" << std::endl;
 
-  // compute Kramers Rate
-  int currentTime, currentIndex, ipassageTime, count;
-  float KramersRateAB, KramersRateBA, KramersRate;
-  if (1){
-    count=0;
-    std::vector<int> passageTime;
-    for (int traj=0; traj < numTraj; traj++) {
-      currentTime=0;
-      currentIndex = currentTime * numTraj + traj;
-      for ( int j =0; j<100000; j++) {
-        if (currentIndex < numSteps*numTraj ) {
-          currentTime = h_time3[currentIndex];
+  std::vector<int> h_state(numSample, 0); // 1 if B(CIP), 2 if intermediate, 3 if A (FREE)
+  for ( size_t element=0; element < numSample; element++) {
+    if( h_data1[element] % 2 == 0) {
+      h_state[element] = 1;
+    }else if (h_data3[element] % 2 == 1) {
+      h_state[element] = 3;
+    } else{
+      h_state[element] = 2;
+    }
+  }
+
+
+  int prevIndex,currentIndex, count;
+  count=0;
+  std::vector<float> meanKr; // mean Kramers Rate over AB and BA
+  std::vector<float> semsKr; // standard error of mean from Block Average
+  for ( size_t traj=0; traj < numTraj; traj++) {
+    std::vector<float> nuAB;  //indicator function, 1 only if at t-dt~t, traj have "reactive trajectory" crossing B boundary
+    std::vector<float> nuBA;  //indicator function, 1 only if at t-dt~t, traj have "reactive trajectory" crossing B boundary
+    for ( size_t time=1; time < numSteps; time++ ) {
+      currentIndex = time * numTraj + traj;
+      //construction of nuAB: only when all btimes and times are defined
+      if( h_time1[currentIndex] != -1 && h_time3[currentIndex] != -1 
+          && h_btime1[currentIndex] != -1 && h_btime3[currentIndex] != -1 ) {
+        prevIndex = (time-1)*numTraj + traj;
+        // find transitions A->B
+        if( h_state[prevIndex] == 2 && h_state[currentIndex] == 1 
+            && h_btime3[prevIndex] > h_btime1[prevIndex] ) {
+          nuAB.push_back(1);
+          count+=1;
+        }else {
+          nuAB.push_back(0);
+        }
+        // find transitions B->A
+        if( h_state[prevIndex] == 2 && h_state[currentIndex] == 3 
+            && h_btime3[prevIndex] < h_btime1[prevIndex] ) {
+          nuBA.push_back(1);
+          count+=1;
+        }else {
+          nuBA.push_back(0);
+        }
+      }
+    }
+    meanKr.push_back(mean(nuAB));
+    meanKr.push_back(mean(nuBA));
+    semsKr.push_back(blockAverage(nuAB));
+    semsKr.push_back(blockAverage(nuBA));
+//    std::cout << "Traj " << traj << " AB " << mean(nuAB)*nuAB.size() << " BA " << mean(nuBA)* nuAB.size()<< "\n";
+  }
+
+  float KramersRate=0;
+  float KramersErr=0;
+  for( int i =0; i<meanKr.size(); i++ ) {
+    KramersRate += meanKr[i]/semsKr[i]/semsKr[i];
+    KramersErr += 1/semsKr[i]/semsKr[i];
+  }
+  KramersRate /= KramersErr*timestep/1000;
+  KramersErr = std::sqrt(1/KramersErr) / timestep*1000;
+  std::cout << "Kramers Rate : " << KramersRate << " /ns\t\t Err: " << KramersErr  << " count: " << count << "\n";
+
+
+  // check if A<->B jump occurs 
+  count=0;
+  for (int traj=0; traj < numTraj; traj++) {
+    for ( size_t time =1; time < numSteps-1 ; time++) {
+      currentIndex  = time * numTraj + traj;
+      prevIndex = currentIndex-numTraj;
+      if (std::abs(h_state[currentIndex]-h_state[prevIndex]) == 2) {
+        count+=1;
+        std::cout << "Error! jump occured,  count : " << count << std::endl;
+      }
+    }
+  }
+
+  std::vector<std::vector<float>> committor(5); // q+, q-, pA, pAB, pB
+  std::vector<std::vector<float>> committorErr(5); // q+, q-, pA, pAB, pB
+
+  for ( size_t traj=0; traj < numTraj; traj++) {
+    std::vector<std::vector<float>> commit(5);  //indicator function, 1 
+    for ( size_t time=0; time < numSteps; time++ ) {
+      currentIndex = time * numTraj + traj;
+      //consideer only part of trajectory who has full history
+      if( h_time1[currentIndex] != -1 && h_time3[currentIndex] != -1 
+          && h_btime1[currentIndex] != -1 && h_btime3[currentIndex] != -1 ) {
+        // find q+: go to B before A
+        if( h_time1[currentIndex] < h_time3[currentIndex] ) { 
+          commit[0].push_back(1);
+        }else {
+          commit[0].push_back(0);
+        }
+        // find q-: come from A than B
+        if( h_btime1[currentIndex] < h_btime3[currentIndex] ) { 
+          commit[1].push_back(1);
+        }else {
+          commit[1].push_back(0);
+        }
+        // population A
+        if ( h_state[currentIndex] == 3) {
+          commit[2].push_back(1);
         } else {
-          currentTime=0;
-          break;
+          commit[2].push_back(0);
         }
-        if (currentTime == -1){
-          currentTime=0;
-          break;
-        }
-
-        currentIndex = (currentTime) * numTraj + traj; // when a traj first hits A boundary  2->3 or 3->2
-        if ( (h_time1[currentIndex] < h_time3[currentIndex] )  && (h_time1[currentIndex] != -1) ) { // reactive trajectory not including A->B transition
-          ipassageTime = h_time1[currentIndex] - currentTime;
-          passageTime.push_back(ipassageTime);
-          count+=1;
-        }
-      }
-    }
-    KramersRateAB = (float) count / numSteps /timestep/  numTraj * 1000;
-    std::cout << "Kramers Rate AB : " << KramersRateAB << " /ns " << "count " << count<< std::endl;
-  }
-
-  if (1){ //  Kramers Rate BA
-    count=0;
-    for (int traj=0; traj < numTraj; traj++) {
-      currentTime=0;
-      currentIndex = currentTime * numTraj + traj;
-      for ( int j =0; j<100000; j++) {
-        if (currentIndex < numSteps*numTraj ) {
-          currentTime = h_time1[currentIndex];
+        // population AB
+        if ( h_state[currentIndex] == 2) {
+          commit[3].push_back(1);
         } else {
-          currentTime=0;
-          break;
+          commit[3].push_back(0);
         }
-        if (currentTime == -1){
-          currentTime=0;
-          break;
+        // population B
+        if ( h_state[currentIndex] == 1) {
+          commit[4].push_back(1);
+        } else {
+          commit[4].push_back(0);
         }
 
-        currentIndex = (currentTime) * numTraj + traj; 
-        if ( (h_time1[currentIndex] > h_time3[currentIndex] )  && (h_time3[currentIndex] != -1)) { 
-          ipassageTime = h_time3[currentIndex] - currentTime;
-          count+=1;
-        }
       }
     }
-    KramersRateBA = (float) count / numSteps/ timestep / numTraj * 1000;
-    std::cout << "Kramers Rate BA : " << KramersRateBA << " /ns " << "count " << count<< std::endl;
-  }
-  KramersRate = (KramersRateAB + KramersRateBA) / 2.0;
-
-  // find any trajectory jump from A to B
-  if (1){
-    count=1;
-    //for (int traj=0; traj < numTraj; traj++) {
-    for (int traj=0; traj < 1; traj++) {
-      for ( size_t time =0; time < numSteps-1 ; time++) {
-        currentIndex  = time * numTraj + traj;
-        if ( h_data3[currentIndex] % 2 == 1 && h_data1[currentIndex + numTraj] % 2 == 0 ) { // transition from 3 to 1
-          std::cout << "Error! jump from A to B occured,  count : " << count << std::endl;
-          count+=1;
-        }
-        //if (fdist[currentIndex] > 300) {
-          //std::cout << "Error! dist,  count : " << fdist[currentIndex] << std::endl;
-        //}
-      }
+    for( int j=0; j<committor.size(); j++ ) {
+      committor[j].push_back( mean(commit[j]));
+      committorErr[j].push_back( blockAverage(commit[j]));
     }
+//    std::cout << "Traj " << traj << " AB " << mean(nuAB)*nuAB.size() << " BA " << mean(nuBA)* nuAB.size()<< "\n";
+  }
+  std::vector<float> fcommittor(5, 0.0);
+  std::vector<float> fcommittorErr(5, 0.0);
+  for( size_t i =0; i<committor.size(); i++ ) {
+    for( size_t j=0; j<committor[i].size(); j++ ) {
+      fcommittor[i] += committor[i][j]/committorErr[i][j]/committorErr[i][j];
+      //fcommittor[i] += committor[i][j];
+      fcommittorErr[i] += 1.0/committorErr[i][j]/committorErr[i][j];
+    }
+    fcommittor[i] /= fcommittorErr[i];
+    //fcommittor[i] /= committor[i].size();
+    fcommittorErr[i] =std::sqrt(1/fcommittorErr[i]) ;
   }
 
+  std::cout << "\n\nCommittors and Population Analysis\n";
+  float sumq, sumqerr, sump, sumperr;
+  sumq = fcommittor[0] + fcommittor[1];
+  sumqerr = std::sqrt( fcommittorErr[0]*fcommittorErr[0] + fcommittorErr[1]*fcommittorErr[1])/2.;
+  sump = fcommittor[2] + fcommittor[3] + fcommittor[4];
+  sumperr = std::sqrt( fcommittorErr[2]*fcommittorErr[2] + fcommittorErr[3]*fcommittorErr[3] + fcommittorErr[4]*fcommittorErr[4])/3.;
+
+  std::cout << "means:\t\t" << std::fixed << std::setprecision(7) << fcommittor[0] << "\t\t" << fcommittor[1] << "\t\t" << fcommittor[2] << "\t\t"
+    << fcommittor[3] << "\t\t" << fcommittor[4] << "\t\t" << sumq << "\t\t" << sump  <<  "\n";
+
+  std::cout << "SEMS:\t\t" << std::fixed << std::setprecision(7) << fcommittorErr[0] << "\t\t" << fcommittorErr[1] << "\t\t" << fcommittorErr[2] << "\t\t"
+    << fcommittorErr[3] << "\t\t" << fcommittorErr[4] << "\t\t" <<  sumqerr << "\t\t" << sumperr <<  "\n";
+
+
+  /*
   // compute committors and populations
   std::vector<float> committors(5, 0); // forward, backward, A, B, C
   if (1) {
     computeCommittors(h_data1, h_time1, h_btime1, h_data3, h_time3, h_btime3,  numSteps, numTraj, committors);
     std::cout << "forward : " << committors[0] << " backward " << committors[1] << " sum " << committors[0]+committors[1] << " pA "  << committors[2] << " pAB " << committors[3] << " pB " << committors[4] << std::endl;
   }
+  */
 
-  // compute MFPT with conditioning
-  if (1){
-    float MFPT;
-    int pathTime=0;
-    int prevIndex=0;
-    count=0;
-    for (int traj=0; traj < numTraj; traj++) {
-      currentTime=0;
-      currentIndex = currentTime * numTraj + traj;
-      for ( int j =0; j<100000; j++) {
-        if (currentIndex < numSteps*numTraj ) {
-          currentTime = h_time3[currentIndex];
-        } else {
-          currentTime=0;
-          break;
-        }
-        if (currentTime == -1){
-          currentTime=0;
-          break;
-        }
-        currentIndex = (currentTime) * numTraj + traj; // when a traj first hits A boundary  2->3 or 3->2
-        prevIndex = (currentTime-1) * numTraj + traj; // right before it hits A boundary
-        if ( h_btime1[prevIndex] > h_btime3[prevIndex] &&  h_time1[currentIndex] != -1 ) { // if the trajectory comes from B, not A, and currently located at partial A
-          pathTime += h_time1[currentIndex] - currentTime;
-          count +=1;
-        }
+  // compute recombination MFPT with conditioning, few sample > no block average
+  int currentTime;
+  count=0;
+  std::vector<float> pathTime;
+  for (int traj=0; traj < numTraj; traj++) {
+    currentTime=0;
+    currentIndex = currentTime * numTraj + traj;
+    for ( int j =0; j<100000; j++) {
+      if (currentIndex < numSteps*numTraj ) {
+        currentTime = h_time3[currentIndex];
+      } else {
+        currentTime=0;
+        break;
+      }
+      if (currentTime == -1){
+        currentTime=0;
+        break;
+      }
+      currentIndex = (currentTime) * numTraj + traj; // when a traj first hits A boundary  2->3 or 3->2
+      prevIndex = (currentTime-1) * numTraj + traj; // right before it hits A boundary
+      if ( h_btime1[prevIndex] > h_btime3[prevIndex] &&  h_time1[currentIndex] != -1 && prevIndex >0 ) { // if the trajectory comes from B, not A, and currently located at partial A
+        pathTime.push_back(h_time1[currentIndex] - currentTime);
+        count +=1;
       }
     }
-    MFPT = (float) pathTime * timestep / count / 1000;
-    std::cout << "MFPT is : " << MFPT << " ns " << count << std::endl;
-    std::cout << "compare it with <q->/Kr  : " << committors[1] / KramersRate  << "  " << std::endl;
   }
+  float rateAB = 1/(mean(pathTime)*timestep/1000);
+  float rateABErr = std::sqrt(variance(pathTime)/pathTime.size()) /(timestep/1000) / mean(pathTime) / mean(pathTime);
 
-  // compute MFPT for dissociation
-  if (1){
-    float MFPT;
-    int pathTime=0;
-    int prevIndex=0;
-    count=0;
-    for (int traj=0; traj < numTraj; traj++) {
-      currentTime=0;
-      currentIndex = currentTime * numTraj + traj;
-      for ( int j =0; j<100000; j++) {
-        if (currentIndex < numSteps*numTraj ) {
-          currentTime = h_time1[currentIndex];
-        } else {
-          currentTime=0;
-          break;
-        }
-        if (currentTime == -1){
-          currentTime=0;
-          break;
-        }
-        currentIndex = (currentTime) * numTraj + traj; // when a traj first hits B boundary  1->2 or 2->1
-        prevIndex = (currentTime-1) * numTraj + traj; // right before it hits A boundary
-        if ( h_btime1[prevIndex] < h_btime3[prevIndex] && h_time3[currentIndex] != -1  ) { // if the trajectory comes from A, not B
-          pathTime += h_time3[currentIndex] - currentTime;
-          count +=1;
-        }
+  float KramersABErr = KramersRate/fcommittor[1]*std::sqrt( (KramersErr/KramersRate)*(KramersErr/KramersRate) + (fcommittorErr[1]/fcommittor[1])*(fcommittorErr[1]/fcommittor[1]) );
+  std::cout << "\nRecombination MFPT rate: " << rateAB << " /ns\tErr: " << rateABErr <<  "\tcount " << count << "\tcompare: " << KramersRate/fcommittor[1] << "\tErr\t" << KramersABErr << std::endl;
+
+
+  // compute dissociation MFPT with conditioning
+  count=0;
+  std::vector<float> bpathTime;
+  for (int traj=0; traj < numTraj; traj++) {
+    currentTime=0;
+    currentIndex = currentTime * numTraj + traj;
+    for ( int j =0; j<100000; j++) {
+      if (currentIndex < numSteps*numTraj ) {
+        currentTime = h_time1[currentIndex];
+      } else {
+        currentTime=0;
+        break;
+      }
+      if (currentTime == -1){
+        currentTime=0;
+        break;
+      }
+      currentIndex = (currentTime) * numTraj + traj; // when a traj first hits A boundary  2->3 or 3->2
+      prevIndex = (currentTime-1) * numTraj + traj; // right before it hits A boundary
+      if ( h_btime1[prevIndex] < h_btime3[prevIndex] &&  h_time3[currentIndex] != -1 ) { // if the trajectory comes from B, not A, and currently located at partial A
+        bpathTime.push_back(h_time3[currentIndex] - currentTime);
+        count +=1;
       }
     }
-    MFPT = (float) pathTime * timestep / count / 1000;
-    std::cout << "Dissociation MFPT is : " << MFPT << " ns " << count << std::endl;
-    std::cout << "compare it with <q+>/Kr  : " << committors[0] / KramersRate  << "  " << std::endl;
   }
+  float rateBA = 1/(mean(bpathTime)*timestep/1000);
+  float rateBAErr = std::sqrt(variance(bpathTime)/bpathTime.size()) /(timestep/1000) / mean(bpathTime) / mean(bpathTime);
 
-  // compute probability of finding vacant ion
-  if (1){
-    int num=0;
-    int den=0;
-    for (int traj=0; traj < numTraj; traj++) {
-      for (size_t time=0; time < numSteps; time++) {
-        den+=1;
-        currentIndex = time*numTraj + traj;
-        if( fdist[currentIndex] > 5.0 ){
-          num +=1;
-        }
-      }
-    }
-    std::cout << "vacant ion probability : " << (float) num/den << std::endl;
-  }
-
-  /// compute radial histograms
-
-  return 0;
-}
+  float KramersBAErr = KramersRate/fcommittor[0]*std::sqrt( (KramersErr/KramersRate)*(KramersErr/KramersRate) + (fcommittorErr[0]/fcommittor[0])*(fcommittorErr[0]/fcommittor[0]) );
+  std::cout << "\nDissociation MFPT rate: " << rateBA << " /ns\tErr: " << rateBAErr <<  "\tcount " << count << "\tcompare: " << KramersRate/fcommittor[0] << "\tErr\t" << KramersBAErr << std::endl;
 
   
-
-
-
+  float rho;
+  if (density == "05") {
+    rho = 0.5;
+  } else if (density == "025") {
+    rho = 0.25;
+  } else {
+    rho = 0;
+  }
+  float bimErr = rateAB/fcommittor[1]/rho * std::sqrt( (rateABErr/rateAB)*(rateABErr/rateAB) + (fcommittorErr[1]/fcommittor[1])* (fcommittorErr[1]/fcommittor[1]) );
+  float KassErr = fcommittor[0]/fcommittor[1]/fcommittor[1]/rho * std::sqrt( (fcommittorErr[0]/fcommittor[0] ) *(fcommittorErr[0]/fcommittor[0]) + (fcommittorErr[1]/fcommittor[1])*(fcommittorErr[1]/fcommittor[1]) *2 );
+  // generate output result
+  std::string resfile = "../results/rate/rateD" + density + "E" + field + ".dat";
+  std::ofstream out (resfile );
+  out << std::fixed << std::setprecision(5) << density << "\t\t" << field << "\t\t"  
+    << CUTOFFin << "\t\t" << CUTOFFout <<"\t\t" << numSteps*timestep/1000  << "\t\t"
+    << fcommittor[0] << "\t\t" << fcommittorErr[0] << "\t\t" << fcommittor[1] << "\t\t" << fcommittorErr[1] << "\t\t" 
+    << KramersRate << "\t\t" << KramersErr << "\t\t" 
+    << rateAB << "\t\t" << rateABErr << "\t\t" << rateBA << "\t\t" << rateBAErr << "\t\t" 
+    << rateAB/fcommittor[1]/rho << "\t\t" << bimErr  << "\t\t"
+    << fcommittor[0]/fcommittor[1]/fcommittor[1]/rho << "\t\t" << KassErr  << "\t\t"
+    << "\n";
+  out.close();
+  return 0;
+}
