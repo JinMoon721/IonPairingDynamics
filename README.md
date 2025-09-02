@@ -1,19 +1,20 @@
 # LiHalides
 Analysis code for Ion association/dissociation rate measurement, TPT analysis
-Currently, all data come from LiCl of density 0.25M and 0.5M, with electric field strength ranged from 0 to 22 meV/A.
+Electric field strength ranged from 0 to 22 meV/A.
 
 ## Necessary directories
 ./results < place for saving all results 
-./data/cnnDist ./data/cnnAngle < place for saving conditioend nn info
-./data/dumps < add binary trajectory dump files, format : type, x, y, z
+./data/cnnDist ./data/cnnAngl < place for saving conditioend nn info
+./data/dumps<name>/ < add binary trajectory dump files, format : type, x, y, z
 
 ## note
-Always run conductivity first: it generates cnn Files
+conductivity : Required to be run firstly, since it generates all conditioned nearest neighbor list.
 
 ###
 conductivity:
 
-construct graph-based clusters of ion and measure a conditioned nearest neighbor counter ion distance.
+construct graph-based clusters of ion ( cutoff = CUTOFFin). 
+Goal is to generate an order parameter for each ion that will be used as state space definition.
 Standard error of means are computed from block-averaging of Peterson (Franchel and Smith). If SEMs find convergence, (consequtive 3 , tolerance of less than 5% ), we find error.
 
 outputs:

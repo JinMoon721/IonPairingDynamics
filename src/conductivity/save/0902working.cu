@@ -507,6 +507,61 @@ void findCounterOutside (int index, std::vector<Atom>& atoms, const std::vector<
   atoms[index].nnangl = computeAngle(atoms, index, bestAtom, box);
 }
 
+float FfindCounterOutside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
+  assert(index >=0 && static_cast<size_t>(index) < atoms.size());
+  const int myCharge = atoms[index].charge;
+  const int needSign = (myCharge > 0 ? -1 : +1);
+
+  int myCluster = -1;
+  for(int cl=0; cl<clusters.size() && myCluster <0; cl++ ){
+    for (int i: clusters[cl]){
+      if (i == index) { myCluster = cl; break;}
+    }
+  }
+  if (myCluster <0 ) std::cout << "Error, current cluster not found\n";
+
+  int bestCluster = -1;
+  float bestClusterDist = std::numeric_limits<float>::infinity();
+
+  for ( int cl = 0; cl < clusters.size(); cl++ ) {
+    if ( cl== myCluster) continue;
+
+    int net = netCharge(clusters[cl]);
+    if ((needSign > 0 && net <= 0) || (needSign < 0 && net >= 0)) {
+      continue;
+    }
+    float minD = std::numeric_limits<float>::infinity();
+    for (int j : clusters[cl]){
+      float d  = distanceMatrix[index][j];
+      if ( d< minD) minD = d;
+    }
+    if( minD < bestClusterDist) {
+      bestClusterDist = minD;
+      bestCluster = cl;
+    }
+  }
+  if (bestCluster < 0 ) {
+    atoms[index].nncounter = -1;
+    atoms[index].nndist = -1.0;
+    std::cout << "Error, counter ion not found\n";
+  }
+
+  int bestAtom = -1;
+  float bestD = std::numeric_limits<float>::infinity();
+
+  for( int j : clusters[bestCluster]) {
+    //if (atoms[j].charge == needSign && atoms[j].role == 1 ) { 
+    if (atoms[j].charge == needSign ) { // role 2 can be a candidate 
+      float d = distanceMatrix[index][j];
+      if (d<bestD) { bestD = d; bestAtom = j;}
+    }
+  }
+  if (bestAtom < 0) {
+    std::cout << "Out Error, cannot find best ion for " << index << "\n\n";
+  }
+  return bestD;
+}
+
 
 void findCounterInside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
   assert(index >=0 && static_cast<size_t>(index) < atoms.size());
@@ -712,174 +767,38 @@ void updateTag(const Rows& clusters, const Rows& pclusters, std::vector<Atom>& a
   }
 }
 
-struct indexTag {
-  int tag;
-  int pid;
-  int cid;
-};
 
-void detectJump( const std::vector<Atom>& atoms, const std::vector<float>& pdist ,const std::vector<int> ptags, float CUTOFFin, float CUTOFFout, int time) {
-  std::vector<indexTag> idx;
-  for ( int tag =0; tag<pdist.size(); tag++){  
+std::vector<int> detectJump( const std::vector<Atom>& atoms, const std::vector<float>& pdist ,const std::vector<int> ptags, float cutoff) {
+  std::vector<int> idx;
+  for ( int i =0; i<pdist.size(); i++){ // here i is tag 
+    // find previous particle with tag i
     float prevDist = 0;
-    int index;
-    auto it = std::find(ptags.begin(), ptags.end(), tag);
+    auto it = std::find(ptags.begin(), ptags.end(), i);
     if ( it == ptags.end() ) {
       std::cout << "Previous, cannot find properly tagged particle\n\n";
     } else {
-      index = std::distance(ptags.begin(), it);
+      int index = std::distance(ptags.begin(), it);
       prevDist = pdist[index];
     }
 
     float currDist = 0;
-    auto cit = std::find_if( atoms.begin(), atoms.end(), [tag](const Atom& a ){ return a.tag == tag; });
+    auto cit = std::find_if( atoms.begin(), atoms.end(), [i](const Atom& a ){ return a.tag == i; });
     if (cit == atoms.end()) { 
       std::cout << "Current  cannot find properly tagged particle\n\n";
     } else {
       currDist = cit->nndist;
     }
       
-    if (std::fabs(currDist - prevDist) > (CUTOFFout - CUTOFFin) ) {
-      idx.emplace_back( indexTag{tag, index, cit->id});
+    if (std::fabs(currDist - prevDist) > cutoff ) {
+      idx.push_back(i);
     }
   }
-  // idx contains tags of jumped particles
-  if(!idx.empty()){ 
-    for (auto& mem : idx) {
-      if ( pdist[mem.pid] > CUTOFFout && atoms[mem.cid].nndist < CUTOFFin ) {
-        std::cout << "Jump from out to in | time " << time << " | pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-      if ( pdist[mem.pid] < CUTOFFin && atoms[mem.cid].nndist > CUTOFFout ) {
-        std::cout << "Jump from in to out | time " << time << "  pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-    }
-  }
+  return idx;// tag list
 }
+
 
 
 ////////// Statistics
-struct Histogram {
-  std::vector<float> edges;
-  std::vector<float> counts;
-  float binWidth(std::size_t i=0) const {
-    return edges.size() > 1? (edges[i+1]-edges[i]) : 0.0;
-  }
-};
-
-Histogram makeHistogram(const std::vector<float>& data, size_t nbins, float minEdge, float maxEdge){
-  Histogram h;
-  h.edges.resize(nbins + 1);
-  h.counts.assign(nbins, 0.0);
-
-  if (nbins == 0) return h;
-  if (maxEdge == minEdge) maxEdge = minEdge + 1;
-
-  const float width = (maxEdge - minEdge)/ static_cast<float>(nbins);
-  for( size_t i =0; i<= nbins; i++ ) h.edges[i] = minEdge + i* width;
-
-  for(size_t k=0; k<data.size(); k++) {
-    float x = data[k];
-    long idx = static_cast<long>(std::floor( (x-minEdge) / width));
-    if (idx < 0 ) idx =0;
-    if (idx > static_cast<long>(nbins)) idx = static_cast<long>(nbins)-1;
-    h.counts[static_cast<size_t>(idx)] += 1.0;
-  }
-  return h;
-}
-
-Histogram makeHistogramAuto(const std::vector<float>& data, size_t nbins) {
-  if ( data.empty() || nbins == 0) return {};
-  auto mm = std::minmax_element(data.begin(), data.end());
-  float mn = *mm.first;
-  float mx = *mm.second;
-  if ( mx == mn ) {mn -= 0.5; mx += 0.5;}
-
-  return makeHistogram(data, nbins, mn, mx);
-}
-std::vector<float> normalizePDF(const Histogram& h) {
-  float N = std::accumulate(h.counts.begin(), h.counts.end(), 0.0);
-  std::vector<float> pdf(h.counts.size(), 0.0);
-  if ( N > 0 && h.edges.size() >=2) {
-    for (size_t i =0; i< h.counts.size(); i++) {
-      float bw = h.edges[i+1] - h.edges[i];
-      if (bw > 0 ) pdf[i] = h.counts[i] / (N*bw);
-    }
-  }
-  return pdf;
-}
-
-void printHistogram( const Histogram& h, std::ostream& os = std::cout) {
-  std::vector<float> pdf = normalizePDF(h);
-  os.setf(std::ios::fixed);
-  os << std::setprecision(6);
-  for( size_t i =0; i< h.edges.size(); i++ ) {
-    float x = 0.5 * (h.edges[i] + h.edges[i+1]);
-    os << x << "\t" << pdf[i] << "\n";
-  }
-}
-
-std::vector<float> histPDFatEdges(const Histogram& h) {
-  size_t nb = h.counts.size();
-  std::vector<float> y; 
-  y.assign(nb+1, 0.0);
-
-  float N = std::accumulate(h.counts.begin(), h.counts.end(), 0.0);
-  if ( N<=0.0 || h.edges.size() != nb+1 ) return y;
-
-  for (size_t i =0; i< nb ; i++){
-    float bw = h.edges[i+1] - h.edges[i];
-    y[i] = (bw > 0.0) ? (h.counts[i] / N / bw) : 0.0;
-  }
-  y[nb] = y[nb - (nb > 0 ? 1: 0)];
-  return y;
-}
-
-float linInterp(float x0, float y0, float x1, float y1, float x) {
-  float dx = x1-x0;
-  if (dx==0.0) return 0.5*(y0+y1);
-  float t= (x-x0)/dx;
-  return y0 + t* (y1-y0);
-}
-
-float integratePDF(const Histogram& h, float xi, float xf) {
-  if (h.edges.size() < 2 || h.counts.size() +1 != h.edges.size()) return 0.0;
-  if (xi > xf ) std::swap(xi, xf);
-
-  const std::vector<float>& x = h.edges;
-  std::vector<float> y = histPDFatEdges(h);
-
-  float a = x.front();
-  float b = x.back();
-  if ( xf <= a || xi >= b) return 0.0;
-  xi = std::max(xi, a);
-  xf = std::min(xf, b);
-
-  std::vector<float>::const_iterator itL = std::upper_bound(x.begin(), x.end(), xi);
-  std::vector<float>::const_iterator itR = std::upper_bound(x.begin(), x.end(), xf);
-  size_t j = (itL == x.begin() ? 0 : static_cast<size_t>((itL - x.begin()) -1));
-  size_t k = (itR == x.begin() ? 0 : static_cast<size_t>((itR - x.begin()) -1));
-  if( j >= x.size() -1) j = x.size() -2;
-  if( k >= x.size() -1) k= x.size() -2;
-  float y_xi = linInterp(x[j], y[j], x[j+1], y[j+1], xi);
-  float y_xf = linInterp(x[k], y[k], x[k+1], y[k+1], xf);
-  if ( j== k) { 
-    return 0.5 * (y_xi + y_xf) * (xf - xi);
-  }
-
-  float area = 0.0;
-  area += 0.5 * (y_xi + y[j+1]) * (x[j+1] - xi);
-
-  for ( size_t m = j+1; m< k; m++ ) {
-    area += 0.5 * (y[m]+y[m+1]) * (x[m+1] - x[m]);
-  }
-  area += 0.5 * (y[k] + y_xf) * (xf - x[k]);
-  return area;
-}
-
-
-    
-
-
 float mean(const std::vector<float>& data) {
   float sum = 0.0;
   for (float x : data) sum += x;
@@ -1010,11 +929,15 @@ int main(int argc, char* argv[]) {
   std::cout << "domainCutoffs: in " << CUTOFFin << " A\t\tout "<< CUTOFFout << " A\n";
   std::cout << "timeStep: " << timestep << " ps\n";
   std::cout << "eqTime: " << eqtime << " ns\n";
+
   std::cout << "\n\n";
 
+
+  // Get dump files for numberOfEnsemble = 1 case
   std::cout << "Dump Reading Starts\n";
   int numsnap;
   std::vector<std::vector<float>> traj;
+  //reading coordinate file
   std::string inputFileName = "../data/dumps" + dirName + "/dumpD" + rho + "E" + fieldname + ".binary";
   traj = readBinary(inputFileName);
   if (traj.size() % numatoms != 0) {
@@ -1022,6 +945,7 @@ int main(int argc, char* argv[]) {
   } else {
     numsnap = traj.size()/numatoms;
   }
+
   std::cout << "Read from dump files " << inputFileName  << " of length " << numsnap * timestep/1000 << " ns\n";
   std::cout << "Removing initial " << eqtime << " ns for relaxation\n";
   int removesnap=static_cast<int>(1000*eqtime/timestep*numatoms);
@@ -1029,7 +953,7 @@ int main(int argc, char* argv[]) {
   numsnap = traj.size()/numatoms;
   std::cout << "Analysis will be on trajectory of length " << numsnap*timestep/1000 << " ns\n\n";
 
-  // trajectory binary accepts only two type of ion ordering.
+
   //check the order of types
   bool alter;
   if (traj[0][0] != traj[1][0] ) {
@@ -1040,18 +964,30 @@ int main(int argc, char* argv[]) {
     alter=false;
   }
 
-  //collect all time series of reduced trajectory
-  std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor distance, A unit
-  std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
+  /*
+  for ( int time = 0; time < 2; time++ ) {
+    for ( int index = 0; index < numatoms; index++ ) {
+      int init = time*numatoms;
+      std::cout << "Atom" << index+1 << "\t" << traj[init+index][0] << "\t" 
+        << traj[init+index][1] << "\t" << traj[init+index][2] << "\t" << traj[init+index][3] << "\n";
+    }
+    std::cout << "\n";
+  }
+  */
 
-  // placeholder for previous frame Atom properties
+  //numsnap = 10000;
+  std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor distance, A unit
+  std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numpion, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
+  std::vector<std::vector<int>> anionIndex(numsnap, std::vector<int>( numpion, -1) ); // conditioned nearest neighbor index
+  std::vector<std::vector<float>> allCurrent(numsnap-1, std::vector<float>( numatoms, 0.0)); 
+
+  
   std::vector<int> proles(numatoms, -1);
   std::vector<int> ptags(numatoms);
   std::iota(ptags.begin(), ptags.end(), 0);
   std::vector<float> pdist(numatoms, -1);
   std::vector<std::vector<int>> pclusters;
 
-  std::vector<float> deltaDist;
 
   // save visualization for each time step
   std::ofstream ofs("video.lammpstrj");
@@ -1060,11 +996,12 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  int st=500000;
-  //for (int time= st; time<numsnap; time++){
-  for (int time= st; time<st+20000; time++){
+  //int st=0;
+  //for ( int time = 0; time<numsnap; time++){
+  int st=537800;
+  for (int time= st; time<numsnap; time++){
     std::vector<Atom> frame; // id charge role swap tag nndist nnangl nnanion x y z
-    //get one frame
+    //get one snapshot >> ions
     int init = time*numatoms;
     if (alter ) {
       for ( int i=init; i<init+numatoms;i++) {
@@ -1092,7 +1029,7 @@ int main(int argc, char* argv[]) {
         }
       }
     }
-
+  
     // construct clusters, BFS algorithm
     std::vector<std::vector<int>> clusters;
     findClusters(graph, clusters, numatoms);
@@ -1103,6 +1040,11 @@ int main(int argc, char* argv[]) {
       roleAssignment(clusters, frame, graph, distanceMatrix, box); // frame[i].role determines whether it finds counter ion inside or outside of cluster
       findCounterIons(frame, clusters, distanceMatrix, box); // based on role, find conditioned counter ion (index, dist, angl)
 
+      // save role, tag and cluster info 
+      std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
+      std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
+      std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
+      pclusters = clusters; // save cluster info
     } else {
       for(auto& atom : frame) atom.tag = ptags[atom.id]; // update tag
       roleAssignment(clusters, frame, graph, distanceMatrix, box);
@@ -1110,45 +1052,31 @@ int main(int argc, char* argv[]) {
       updateTagMerge(clusters,pclusters,  frame,  proles, time); // merge or continue
       updateTag(clusters, pclusters, frame, proles, time);  // dissociate or exchange
 
-      detectJump(frame, pdist, ptags, CUTOFFin, CUTOFFout, time); // list of tags
-
+      std::vector<int> jumps = detectJump(frame, pdist, ptags, 3.0); // list of tags
+      if (!jumps.empty()) {
+        for(int mem : jumps){
+          auto pit = std::find(ptags.begin(), ptags.end(), mem);
+          int pindex = std::distance(ptags.begin(), pit);
+          auto cit = std::find_if(frame.begin(), frame.end(), [mem](const Atom& a ) { return a.tag == mem;});
+          if ( cit->nndist < CUTOFFin || pdist[pindex] < CUTOFFin ) {
+            std::cout <<"Time " << time << " tag " << mem << " = cid "<< cit->id << " pid " << pindex << " nndist from " << pdist[pindex] << " to "  << cit->nndist << " \n";
+          }
+        }
+      }
       for(int tagg=0; tagg<numatoms; tagg++) {
         auto it = std::find_if(frame.begin(), frame.end(), [tagg](const Atom& a){return a.tag==tagg;});
         cdist[time][tagg] = it->nndist;
-        cangl[time][tagg] = it->nnangl;
       }
 
-      for( int tag =0; tag < numatoms; tag++ ) {
-        int pid, cid;
-        auto it = std::find( ptags.begin(), ptags.end(), tag);
-        if (it != ptags.end()) {
-          pid = std::distance(ptags.begin(), it);
-        }
-        auto cit = std::find_if(frame.begin(), frame.end(), [tag](const Atom& a) {return a.tag == tag;});
-        if (cit != frame.end()){
-          cid = cit->id;
-        }
-        deltaDist.push_back(cit->nndist - pdist[pid] );
-      }
+      std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
+      std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
+      std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
+      pclusters = clusters; // save cluster info
     }
-    // save role, tag and cluster info 
-    std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
-    std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
-    std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
-    pclusters = clusters; // save cluster info
     //writeLammpsDump(ofs, time, frame, box);
   }
   ofs.close();
   std::cout << "Wrote LAMMPS dump to traj.dump\n";
-
-  auto h = makeHistogramAuto( deltaDist, 100);
-  std::ofstream out("displacementHist.dat");
-  printHistogram(h, out);
-
-  float cutone = integratePDF(h, -1, 1);
-  std::cout << "-1 to 1 : " << cutone << std::endl;
-  
-
 
   /*
   std::string outputc = "../data/cnnDist/" + dirName + "D" + rho + "E" + fieldname + ".binary"; ; // nearest neighbor distance

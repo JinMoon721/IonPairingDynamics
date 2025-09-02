@@ -507,6 +507,61 @@ void findCounterOutside (int index, std::vector<Atom>& atoms, const std::vector<
   atoms[index].nnangl = computeAngle(atoms, index, bestAtom, box);
 }
 
+float FfindCounterOutside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
+  assert(index >=0 && static_cast<size_t>(index) < atoms.size());
+  const int myCharge = atoms[index].charge;
+  const int needSign = (myCharge > 0 ? -1 : +1);
+
+  int myCluster = -1;
+  for(int cl=0; cl<clusters.size() && myCluster <0; cl++ ){
+    for (int i: clusters[cl]){
+      if (i == index) { myCluster = cl; break;}
+    }
+  }
+  if (myCluster <0 ) std::cout << "Error, current cluster not found\n";
+
+  int bestCluster = -1;
+  float bestClusterDist = std::numeric_limits<float>::infinity();
+
+  for ( int cl = 0; cl < clusters.size(); cl++ ) {
+    if ( cl== myCluster) continue;
+
+    int net = netCharge(clusters[cl]);
+    if ((needSign > 0 && net <= 0) || (needSign < 0 && net >= 0)) {
+      continue;
+    }
+    float minD = std::numeric_limits<float>::infinity();
+    for (int j : clusters[cl]){
+      float d  = distanceMatrix[index][j];
+      if ( d< minD) minD = d;
+    }
+    if( minD < bestClusterDist) {
+      bestClusterDist = minD;
+      bestCluster = cl;
+    }
+  }
+  if (bestCluster < 0 ) {
+    atoms[index].nncounter = -1;
+    atoms[index].nndist = -1.0;
+    std::cout << "Error, counter ion not found\n";
+  }
+
+  int bestAtom = -1;
+  float bestD = std::numeric_limits<float>::infinity();
+
+  for( int j : clusters[bestCluster]) {
+    //if (atoms[j].charge == needSign && atoms[j].role == 1 ) { 
+    if (atoms[j].charge == needSign ) { // role 2 can be a candidate 
+      float d = distanceMatrix[index][j];
+      if (d<bestD) { bestD = d; bestAtom = j;}
+    }
+  }
+  if (bestAtom < 0) {
+    std::cout << "Out Error, cannot find best ion for " << index << "\n\n";
+  }
+  return bestD;
+}
+
 
 void findCounterInside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
   assert(index >=0 && static_cast<size_t>(index) < atoms.size());
@@ -584,302 +639,123 @@ void roleAssignment(const std::vector<std::vector<int>>& clusters, std::vector<A
           [](const auto& a , const auto& b) {
           return a.second < b.second;//assending order
           });
-      for( int n=0; n<q; n++) {
-        atoms[id2dist[n].first].role = 1;
-        if( graph[id2dist[n].first].size() > 1 ) {
-          std::swap(atoms[id2dist[n].first].role, atoms[id2dist[q].first].role);
-        }
-      }
+      for( int n=0; n<q; n++) atoms[id2dist[n].first].role = 1;
     }
   }
 }
 
-void updateTagMerge(const std::vector<std::vector<int>>& clusters, const Rows& pclusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
-  auto cls = classify_all(pclusters, clusters);
-  for( int icl=0; icl< clusters.size(); icl++ ) {
-    if( cls[icl].kind == 4 || cls[icl].kind==1) {
-      auto cl = clusters[icl];
-      int net = netCharge(cl);
-      if (net == 0) continue;
+void updateRoleMerge(const std::vector<std::vector<int>>& clusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
+  for ( const auto& cl : clusters) {
+    int net = netCharge(cl);
+    if (net == 0) continue;
 
-      const int q = std::abs(net);
-      const int sign = (net > 0 ? +1 : -1);
+    const int q = std::abs(net);
+    const int sign = (net > 0 ? +1 : -1);
 
-      std::vector<int> candidates;
-      candidates.reserve(cl.size());
-      for( int member : cl) {
-        if (atoms[member].charge == sign ) candidates.push_back(member);
-      }
-
-      const int take = std::min<int>(q, static_cast<int>(candidates.size()));
-      if (take < candidates.size() ) { // when ambiguity in determining role
-        std::vector<int> deltaRole;
-        for ( int k : candidates) deltaRole.push_back( atoms[k].role - proles[k]);
-        int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-        int sum = std::accumulate(deltaRole.begin(), deltaRole.end(), 0);
-        if ( nonzeros >= 2 ) {
-          int first = deltaRole.size();
-          int second = deltaRole.size();
-          for ( int i = 0; i<deltaRole.size(); i++ ) {
-            if (deltaRole[i] != 0) {
-              if ( first == deltaRole.size()){ first = i;}
-              else { second = i; break; }
-            }
-          }
-          //std::swap(atoms[candidates[first]].role, atoms[candidates[second]].role );
-          std::swap(atoms[candidates[first]].tag, atoms[candidates[second]].tag );
-          //std::cout << "MERGE/CONT " << time << " " << candidates[first] << " " << candidates[second] << "\n";
-        }else if (nonzeros > 2) {
-          std::cout << "merge, nonzeros > 2\n";
-        }
-      }
+    std::vector<int> candidates;
+    candidates.reserve(cl.size());
+    for( int member : cl) {
+      if (atoms[member].charge == sign ) candidates.push_back(member);
     }
-  }
-}
 
-void updateTag(const Rows& clusters, const Rows& pclusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
-  auto cls = classify_all(pclusters, clusters);
-  std::vector<int> parentsIndex; // all parents who dissociate
-  for( int cl=0; cl < clusters.size(); cl++ ) {
-    if( cls[cl].kind == 2 ) { // if cluster cl experienced dissociation
-      for(const auto& pr : cls[cl].parents) {
-        parentsIndex.push_back(pr.first);
-      }
-    }
-  }
-  if(!parentsIndex.empty()) {
-    std::sort(parentsIndex.begin(), parentsIndex.end());
-    auto last = std::unique(parentsIndex.begin(), parentsIndex.end());
-    parentsIndex.erase(last, parentsIndex.end());
-    for( int cl : parentsIndex) {
+    const int take = std::min<int>(q, static_cast<int>(candidates.size()));
+    if (take < candidates.size() ) { // when ambiguity in determining role
       std::vector<int> deltaRole;
-      for( int candidate : pclusters[cl]) {
-        deltaRole.push_back( atoms[candidate].role - proles[candidate]);
-      }
+      for ( int k : candidates) deltaRole.push_back( atoms[k].role - proles[k]);
       int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-      //std::cout << "Time " << time <<" dissociation with # nonzeros " << nonzeros << "\n";
-      if (nonzeros >= 2) {
-        std::vector<int> neg, pos;
-        for ( int i = 0 ; i < deltaRole.size(); i++ ){
-          if(deltaRole[i] == -1) neg.push_back(pclusters[cl][i]);
-          else if (deltaRole[i] == 1) pos.push_back(pclusters[cl][i]);
+      int sum = std::accumulate(deltaRole.begin(), deltaRole.end(), 0);
+      if ( nonzeros >= 2 ) {
+        int first = deltaRole.size();
+        int second = deltaRole.size();
+        for ( int i = 0; i<deltaRole.size(); i++ ) {
+          if (deltaRole[i] != 0) {
+            if ( first == deltaRole.size()){ first = i;}
+            else { second = i; break; }
+          }
         }
-
-        int n = std::min(neg.size(), pos.size());
-        for(int k=0; k<n; k++){
-          std::swap( atoms[neg[k]].tag, atoms[pos[k]].tag);
-          //std::cout << "DISS " << time << " " << neg[k] << " " << pos[k] << "\n";
-        }
-      } else if ( nonzeros >=3 ) {
-        std::cout << "parents has more nonzeros\n";
+        /*
+        std::cout << "Time " << time << "\n";
+        std::cout << "cluster size " << cl.size() << " candidates " << candidates.size() << " take " << take << " nonzeros " << nonzeros << " sum " << sum << std::endl;
+        std::cout << "first : " << first << " second : " << second << "\n";
+        std::cout << "first : " << candidates[first] << " second : " << candidates[second] << "\n";
+        */
+        std::swap(atoms[candidates[first]].role, atoms[candidates[second]].role );
       }
     }
   }
+}
+void updateTagSplit(const std::vector<std::vector<int>>& clusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
+  for ( const auto& cl : clusters) {
+    int net = netCharge(cl);
+    if (net == 0) continue;
 
-  std::vector<int> ingredients;
-  for( int cl=0; cl < clusters.size(); cl++ ) {
-    if( cls[cl].kind == 3 ) { // if cluster cl experienced exchange
-      for( int atom : clusters[cl]) {
-        ingredients.push_back(atom);
-      }
-    }
-  }
-  if(!ingredients.empty()) {
-    std::cout << "EXCH " << time << " ";
-    for( int elem : ingredients) { std::cout << elem << " ";}
-    std::cout << "\n";
-    std::vector<int> deltaRole;
-    for( int candidate : ingredients) {
-      deltaRole.push_back( atoms[candidate].role - proles[candidate]);
-    }
-    int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-    //std::cout << "Time " << time << " exchange with # nonzeros " << nonzeros << "\n";
-    if (nonzeros >= 2) {
-      std::vector<int> neg, pos;
-      for ( int i = 0 ; i < deltaRole.size(); i++ ){
-        if(deltaRole[i] == -1) neg.push_back(ingredients[i]);
-        else if (deltaRole[i] == 1) pos.push_back(ingredients[i]);
-      }
+    const int q = std::abs(net);
+    const int sign = (net > 0 ? +1 : -1);
 
-      int n = std::min(neg.size(), pos.size());
-      for(int k=0; k<n; k++){
-        std::swap( atoms[neg[k]].tag, atoms[pos[k]].tag);
-        std::cout << "EXCH " << time << " " << neg[k] << " " << pos[k] << "\n";
+    std::vector<int> candidates;
+    candidates.reserve(cl.size());
+    for( int member : cl) {
+      if (atoms[member].charge == sign ) candidates.push_back(member);
+    }
+
+    const int take = std::min<int>(q, static_cast<int>(candidates.size()));
+    if (take < candidates.size() ) { // when ambiguity in determining role
+      std::vector<int> deltaRole;
+      for ( int k : candidates) deltaRole.push_back( atoms[k].role - proles[k]);
+      int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
+      int sum = std::accumulate(deltaRole.begin(), deltaRole.end(), 0);
+      if ( nonzeros >= 2 ) {
+        int first = deltaRole.size();
+        int second = deltaRole.size();
+        for ( int i = 0; i<deltaRole.size(); i++ ) {
+          if (deltaRole[i] != 0) {
+            if ( first == deltaRole.size()){ first = i;}
+            else { second = i; break; }
+          }
+        }
+        /*
+        std::cout << "Time " << time << "\n";
+        std::cout << "cluster size " << cl.size() << " candidates " << candidates.size() << " take " << take << " nonzeros " << nonzeros << " sum " << sum << std::endl;
+        std::cout << "first : " << first << " second : " << second << "\n";
+        std::cout << "first : " << candidates[first] << " second : " << candidates[second] << "\n";
+        */
+        std::swap(atoms[candidates[first]].role, atoms[candidates[second]].role );
       }
-    } else if ( nonzeros >=3 ) {
-      std::cout << "ingredients has more nonzeros\n";
     }
   }
 }
 
-struct indexTag {
-  int tag;
-  int pid;
-  int cid;
-};
-
-void detectJump( const std::vector<Atom>& atoms, const std::vector<float>& pdist ,const std::vector<int> ptags, float CUTOFFin, float CUTOFFout, int time) {
-  std::vector<indexTag> idx;
-  for ( int tag =0; tag<pdist.size(); tag++){  
+std::vector<int> detectJump( const std::vector<Atom>& atoms, const std::vector<float>& pdist ,const std::vector<int> ptags, float cutoff) {
+  std::vector<int> idx;
+  for ( int i =0; i<pdist.size(); i++){ // here i is tag 
+    // find previous particle with tag i
     float prevDist = 0;
-    int index;
-    auto it = std::find(ptags.begin(), ptags.end(), tag);
+    auto it = std::find(ptags.begin(), ptags.end(), i);
     if ( it == ptags.end() ) {
       std::cout << "Previous, cannot find properly tagged particle\n\n";
     } else {
-      index = std::distance(ptags.begin(), it);
+      int index = std::distance(ptags.begin(), it);
       prevDist = pdist[index];
     }
 
     float currDist = 0;
-    auto cit = std::find_if( atoms.begin(), atoms.end(), [tag](const Atom& a ){ return a.tag == tag; });
+    auto cit = std::find_if( atoms.begin(), atoms.end(), [i](const Atom& a ){ return a.tag == i; });
     if (cit == atoms.end()) { 
       std::cout << "Current  cannot find properly tagged particle\n\n";
     } else {
       currDist = cit->nndist;
     }
       
-    if (std::fabs(currDist - prevDist) > (CUTOFFout - CUTOFFin) ) {
-      idx.emplace_back( indexTag{tag, index, cit->id});
+    if (std::fabs(currDist - prevDist) > cutoff ) {
+      idx.push_back(i);
     }
   }
-  // idx contains tags of jumped particles
-  if(!idx.empty()){ 
-    for (auto& mem : idx) {
-      if ( pdist[mem.pid] > CUTOFFout && atoms[mem.cid].nndist < CUTOFFin ) {
-        std::cout << "Jump from out to in | time " << time << " | pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-      if ( pdist[mem.pid] < CUTOFFin && atoms[mem.cid].nndist > CUTOFFout ) {
-        std::cout << "Jump from in to out | time " << time << "  pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-    }
-  }
+  return idx;
 }
+
 
 
 ////////// Statistics
-struct Histogram {
-  std::vector<float> edges;
-  std::vector<float> counts;
-  float binWidth(std::size_t i=0) const {
-    return edges.size() > 1? (edges[i+1]-edges[i]) : 0.0;
-  }
-};
-
-Histogram makeHistogram(const std::vector<float>& data, size_t nbins, float minEdge, float maxEdge){
-  Histogram h;
-  h.edges.resize(nbins + 1);
-  h.counts.assign(nbins, 0.0);
-
-  if (nbins == 0) return h;
-  if (maxEdge == minEdge) maxEdge = minEdge + 1;
-
-  const float width = (maxEdge - minEdge)/ static_cast<float>(nbins);
-  for( size_t i =0; i<= nbins; i++ ) h.edges[i] = minEdge + i* width;
-
-  for(size_t k=0; k<data.size(); k++) {
-    float x = data[k];
-    long idx = static_cast<long>(std::floor( (x-minEdge) / width));
-    if (idx < 0 ) idx =0;
-    if (idx > static_cast<long>(nbins)) idx = static_cast<long>(nbins)-1;
-    h.counts[static_cast<size_t>(idx)] += 1.0;
-  }
-  return h;
-}
-
-Histogram makeHistogramAuto(const std::vector<float>& data, size_t nbins) {
-  if ( data.empty() || nbins == 0) return {};
-  auto mm = std::minmax_element(data.begin(), data.end());
-  float mn = *mm.first;
-  float mx = *mm.second;
-  if ( mx == mn ) {mn -= 0.5; mx += 0.5;}
-
-  return makeHistogram(data, nbins, mn, mx);
-}
-std::vector<float> normalizePDF(const Histogram& h) {
-  float N = std::accumulate(h.counts.begin(), h.counts.end(), 0.0);
-  std::vector<float> pdf(h.counts.size(), 0.0);
-  if ( N > 0 && h.edges.size() >=2) {
-    for (size_t i =0; i< h.counts.size(); i++) {
-      float bw = h.edges[i+1] - h.edges[i];
-      if (bw > 0 ) pdf[i] = h.counts[i] / (N*bw);
-    }
-  }
-  return pdf;
-}
-
-void printHistogram( const Histogram& h, std::ostream& os = std::cout) {
-  std::vector<float> pdf = normalizePDF(h);
-  os.setf(std::ios::fixed);
-  os << std::setprecision(6);
-  for( size_t i =0; i< h.edges.size(); i++ ) {
-    float x = 0.5 * (h.edges[i] + h.edges[i+1]);
-    os << x << "\t" << pdf[i] << "\n";
-  }
-}
-
-std::vector<float> histPDFatEdges(const Histogram& h) {
-  size_t nb = h.counts.size();
-  std::vector<float> y; 
-  y.assign(nb+1, 0.0);
-
-  float N = std::accumulate(h.counts.begin(), h.counts.end(), 0.0);
-  if ( N<=0.0 || h.edges.size() != nb+1 ) return y;
-
-  for (size_t i =0; i< nb ; i++){
-    float bw = h.edges[i+1] - h.edges[i];
-    y[i] = (bw > 0.0) ? (h.counts[i] / N / bw) : 0.0;
-  }
-  y[nb] = y[nb - (nb > 0 ? 1: 0)];
-  return y;
-}
-
-float linInterp(float x0, float y0, float x1, float y1, float x) {
-  float dx = x1-x0;
-  if (dx==0.0) return 0.5*(y0+y1);
-  float t= (x-x0)/dx;
-  return y0 + t* (y1-y0);
-}
-
-float integratePDF(const Histogram& h, float xi, float xf) {
-  if (h.edges.size() < 2 || h.counts.size() +1 != h.edges.size()) return 0.0;
-  if (xi > xf ) std::swap(xi, xf);
-
-  const std::vector<float>& x = h.edges;
-  std::vector<float> y = histPDFatEdges(h);
-
-  float a = x.front();
-  float b = x.back();
-  if ( xf <= a || xi >= b) return 0.0;
-  xi = std::max(xi, a);
-  xf = std::min(xf, b);
-
-  std::vector<float>::const_iterator itL = std::upper_bound(x.begin(), x.end(), xi);
-  std::vector<float>::const_iterator itR = std::upper_bound(x.begin(), x.end(), xf);
-  size_t j = (itL == x.begin() ? 0 : static_cast<size_t>((itL - x.begin()) -1));
-  size_t k = (itR == x.begin() ? 0 : static_cast<size_t>((itR - x.begin()) -1));
-  if( j >= x.size() -1) j = x.size() -2;
-  if( k >= x.size() -1) k= x.size() -2;
-  float y_xi = linInterp(x[j], y[j], x[j+1], y[j+1], xi);
-  float y_xf = linInterp(x[k], y[k], x[k+1], y[k+1], xf);
-  if ( j== k) { 
-    return 0.5 * (y_xi + y_xf) * (xf - xi);
-  }
-
-  float area = 0.0;
-  area += 0.5 * (y_xi + y[j+1]) * (x[j+1] - xi);
-
-  for ( size_t m = j+1; m< k; m++ ) {
-    area += 0.5 * (y[m]+y[m+1]) * (x[m+1] - x[m]);
-  }
-  area += 0.5 * (y[k] + y_xf) * (xf - x[k]);
-  return area;
-}
-
-
-    
-
-
 float mean(const std::vector<float>& data) {
   float sum = 0.0;
   for (float x : data) sum += x;
@@ -979,6 +855,8 @@ int main(int argc, char* argv[]) {
   if (argc != 11 ) {
     std::cerr << "Error: Not enough arguments.\n" ;
     std::cerr << "Usage : " << argv[0] << "dir_name density field cutoff_in(A) cutoff_out(A) boxX(A) boxY(A) boxZ(A) timestep(ps)  eqtime(ns) \n";
+    //std::cerr << "numberOfEnsemble is non-unity if there are parallel trajectories. Corresponding trajectories are named with final integer if it is not 1.\n";
+
     return 1;
   }
 
@@ -999,22 +877,39 @@ int main(int argc, char* argv[]) {
   float CUTOFFout = std::stof(argv[5]);
   float timestep = std::stof(argv[9]); // ps unit
   float eqtime = std::stof(argv[10]); // ns unit
+  //int dumpOrder = std::stoi(argv[11]); // 1 if cation and anion alternates, 0 otherwise
+  //int numtraj = std::stoi(argv[12]); // if more than 1, nump file names have integer at the end.
+
 
   std::cout << "\nAnalysis Setups\n";
   std::cout << "dump Directory : ../data/dumps" << dirName << "/\n"; 
   std::cout << "output Directory : ../results/" << dirName << "/\n"; 
+  //std::cout << "Units : A, ns, kcal/mol, mol/L\n";
   std::cout << "numIons: " << numatoms << " numPairs: " << numpion << "\n";
   std::cout << "boxSizes x: " << boxX << " A y: " << boxY << " A z: " << boxZ << " A \n";
   std::cout << "density of ions : " << density << "M \n";
   std::cout << "fieldStrength: " << field << " kcal/molA = " << field * fconversion << " mV/A" << "\n"; 
+
   std::cout << "domainCutoffs: in " << CUTOFFin << " A\t\tout "<< CUTOFFout << " A\n";
   std::cout << "timeStep: " << timestep << " ps\n";
   std::cout << "eqTime: " << eqtime << " ns\n";
+  /*
+  if (dumpOrder == 1) {
+    std::cout << "dump file is ordered alternatively\n";
+  } else if (dumpOrder == 0){
+    std::cout << "dump file is ordered sequentially\n";
+  }
+  */
+  //std::cout << "Number of Ensembles : " << numtraj << "\n";
+
   std::cout << "\n\n";
 
+
+  // Get dump files for numberOfEnsemble = 1 case
   std::cout << "Dump Reading Starts\n";
   int numsnap;
   std::vector<std::vector<float>> traj;
+  //reading coordinate file
   std::string inputFileName = "../data/dumps" + dirName + "/dumpD" + rho + "E" + fieldname + ".binary";
   traj = readBinary(inputFileName);
   if (traj.size() % numatoms != 0) {
@@ -1022,6 +917,7 @@ int main(int argc, char* argv[]) {
   } else {
     numsnap = traj.size()/numatoms;
   }
+
   std::cout << "Read from dump files " << inputFileName  << " of length " << numsnap * timestep/1000 << " ns\n";
   std::cout << "Removing initial " << eqtime << " ns for relaxation\n";
   int removesnap=static_cast<int>(1000*eqtime/timestep*numatoms);
@@ -1029,7 +925,7 @@ int main(int argc, char* argv[]) {
   numsnap = traj.size()/numatoms;
   std::cout << "Analysis will be on trajectory of length " << numsnap*timestep/1000 << " ns\n\n";
 
-  // trajectory binary accepts only two type of ion ordering.
+
   //check the order of types
   bool alter;
   if (traj[0][0] != traj[1][0] ) {
@@ -1040,18 +936,30 @@ int main(int argc, char* argv[]) {
     alter=false;
   }
 
-  //collect all time series of reduced trajectory
-  std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor distance, A unit
-  std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
+  /*
+  for ( int time = 0; time < 2; time++ ) {
+    for ( int index = 0; index < numatoms; index++ ) {
+      int init = time*numatoms;
+      std::cout << "Atom" << index+1 << "\t" << traj[init+index][0] << "\t" 
+        << traj[init+index][1] << "\t" << traj[init+index][2] << "\t" << traj[init+index][3] << "\n";
+    }
+    std::cout << "\n";
+  }
+  */
 
-  // placeholder for previous frame Atom properties
+  std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numpion, 0.0) ); // conditioned nearest neighbor distance, A unit
+  std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numpion, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
+  std::vector<std::vector<int>> anionIndex(numsnap, std::vector<int>( numpion, -1) ); // conditioned nearest neighbor index
+  std::vector<std::vector<float>> allCurrent(numsnap-1, std::vector<float>( numatoms, 0.0)); 
+
+  
   std::vector<int> proles(numatoms, -1);
   std::vector<int> ptags(numatoms);
   std::iota(ptags.begin(), ptags.end(), 0);
   std::vector<float> pdist(numatoms, -1);
   std::vector<std::vector<int>> pclusters;
+  std::vector<float> prevz(numatoms, 0.0);
 
-  std::vector<float> deltaDist;
 
   // save visualization for each time step
   std::ofstream ofs("video.lammpstrj");
@@ -1060,11 +968,12 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   
-  int st=500000;
-  //for (int time= st; time<numsnap; time++){
-  for (int time= st; time<st+20000; time++){
+  //numsnap = 200000;
+  //for ( int time = 0; time<numsnap; time++){
+  int st=40000;
+  for (int time= st; time<st+10000; time++){
     std::vector<Atom> frame; // id charge role swap tag nndist nnangl nnanion x y z
-    //get one frame
+    //get one snapshot >> ions
     int init = time*numatoms;
     if (alter ) {
       for ( int i=init; i<init+numatoms;i++) {
@@ -1092,77 +1001,338 @@ int main(int argc, char* argv[]) {
         }
       }
     }
-
+  
     // construct clusters, BFS algorithm
     std::vector<std::vector<int>> clusters;
     findClusters(graph, clusters, numatoms);
 
     // Analysis
     if ( time == st ) {
-      for(auto& atom : frame) atom.tag = atom.id; // initialize tag
       roleAssignment(clusters, frame, graph, distanceMatrix, box); // frame[i].role determines whether it finds counter ion inside or outside of cluster
       findCounterIons(frame, clusters, distanceMatrix, box); // based on role, find conditioned counter ion (index, dist, angl)
+      for(auto& atom : frame) atom.tag = atom.id; // initialize tag
 
+      // save role, tag and cluster info 
+      std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
+      std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
+      std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
+      pclusters = clusters; // save cluster info
     } else {
-      for(auto& atom : frame) atom.tag = ptags[atom.id]; // update tag
       roleAssignment(clusters, frame, graph, distanceMatrix, box);
+      updateRoleMerge(clusters, frame,  proles, time); // when merge occur, swap role to reduce discontinuity
+
+      /*
+      auto cls = classify_all(pclusters, clusters);
+      std::vector<int> candidates;
+      for (int j=0; j< clusters.size(); j++ ) {
+        if (cls[j].kind == 2 || cls[j].kind == 3) { // split or exchange
+          for( int atom : clusters[j]) {
+            candidates.push_back(atom) ;
+          }
+          std::vector<float> shortest;
+          std::vector<int> shortestIdx;
+          int net = netCharge(clusters[j]);
+          int q = std::abs(net);
+          int sign = (net > 0 ? +1 : -1);
+
+          if ( q != 0 && q < clusters[j].size() ) { // ambiguity
+            for ( int atom : clusters[j]) {
+              if( frame[atom].charge == sign ) {
+                shortest.push_back( FfindCounterOutside(atom, frame, clusters, distanceMatrix, box ) );
+                shortestIdx.push_back(atom);
+              }
+            }
+            //std::cout << "Time " << time << " Cluster " << j << " charge " << net << " size " << clusters[j].size() << "\n"; 
+            //for ( int ii =0; ii < shortest.size(); ii++) {
+            //  std::cout << "index " << clusters[j][ii] << " role " << frame[clusters[j][ii]].role << " dist " << shortest[ii] << " ";
+            //}
+            //std::cout << std::endl;
+            if ( shortest[0] > shortest[1] && frame[shortestIdx[0]].role > frame[shortestIdx[1]].role ) { // 
+              std::swap(frame[shortestIdx[0]].role, frame[shortestIdx[1]].role);
+            }
+            else if ( shortest[0] < shortest[1] && frame[shortestIdx[0]].role < frame[shortestIdx[1]].role ) { // 
+              std::swap(frame[shortestIdx[0]].role, frame[shortestIdx[1]].role);
+            }
+          }
+        }
+      }
+      */
+
+      //updateRoleSplit(// current cluster, if it is formed from split, cls[j].kind==2, 
       findCounterIons(frame, clusters, distanceMatrix, box);
-      updateTagMerge(clusters,pclusters,  frame,  proles, time); // merge or continue
-      updateTag(clusters, pclusters, frame, proles, time);  // dissociate or exchange
+      for(auto& atom : frame) atom.tag = ptags[atom.id]; // initialize tag
+//      updateTagSplit(...); // swap tag if there is discontinuity occur during split or exchange 
+      //// update tag
+    
 
-      detectJump(frame, pdist, ptags, CUTOFFin, CUTOFFout, time); // list of tags
 
-      for(int tagg=0; tagg<numatoms; tagg++) {
-        auto it = std::find_if(frame.begin(), frame.end(), [tagg](const Atom& a){return a.tag==tagg;});
-        cdist[time][tagg] = it->nndist;
-        cangl[time][tagg] = it->nnangl;
+      std::vector<int> deltaRole;
+      for ( int cand : candidates) {
+        int target = frame[cand].tag;
+        auto it = std::find(ptags.begin(), ptags.end(), target);
+        int pidx = std::distance( ptags.begin(), it);
+        deltaRole.push_back( frame[cand].role - proles[pidx]);
+      }
+      int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
+      int sum = std::accumulate(deltaRole.begin(), deltaRole.end(), 0) ;
+
+      int first = deltaRole.size();
+      int second = deltaRole.size();
+
+      if (nonzeros >= 2) {
+        for ( int i =0; i<deltaRole.size(); i++ ){
+          if (deltaRole[i] != 0) {
+            if (first == deltaRole.size()) { first = i;}
+            else {second = i; break;}
+          }
+        }
       }
 
-      for( int tag =0; tag < numatoms; tag++ ) {
-        int pid, cid;
-        auto it = std::find( ptags.begin(), ptags.end(), tag);
-        if (it != ptags.end()) {
-          pid = std::distance(ptags.begin(), it);
+      if (!candidates.empty()) { 
+//        std::cout << " nonempty at time " << time << "\t";
+        for (int j = 0; j< candidates.size(); j++ ) {
+//          std::cout << candidates[j] << " ";
         }
-        auto cit = std::find_if(frame.begin(), frame.end(), [tag](const Atom& a) {return a.tag == tag;});
-        if (cit != frame.end()){
-          cid = cit->id;
+        if ( nonzeros >= 2) {
+//          std::cout << "/// nonzeros " << candidates[first] << " and " << candidates[second];
+          std::swap(frame[candidates[first]].tag, frame[candidates[second]].tag);
         }
-        deltaDist.push_back(cit->nndist - pdist[pid] );
+//        std::cout << std::endl;
+      }
+
+      /// end update tag
+
+      /*
+      if ( time==40949 ) {
+        std::swap(frame[30].tag, frame[54].tag);
+      }
+      */
+
+      std::vector<int> jumps = detectJump(frame, pdist, ptags, 3.0);
+      if (!jumps.empty()) {
+        for(int mem : jumps){
+          auto pit = std::find(ptags.begin(), ptags.end(), mem);
+          int pindex = std::distance(ptags.begin(), pit);
+          auto cit = std::find_if(frame.begin(), frame.end(), [mem](const Atom& a ) { return a.tag == mem;});
+          if ( cit->nndist < CUTOFFin || pdist[pindex] < CUTOFFin ) {
+            std::cout <<"Time " << time << " atom index " << cit->id << " : " << pdist[pindex] << "(" << pindex << ") to "  << cit->nndist << " \n";
+          }
+        }
+      }
+
+      /*
+      if ( time == 40949 || time == 40948 ) {
+        auto cls = classify_all(pclusters, clusters);
+        std::cout << "Time : " << time << "\n";
+        for (int j=0; j<clusters.size(); j++) {
+          if (cls[j].kind != 4) {
+            std::cout << "child ";
+            print_set(clusters[j]);
+            std::cout << " -> " << cls[j].kind;
+
+            if (!cls[j].parents.empty()) {
+              std::cout << " parents : ";
+              for (const auto& pr : cls[j].parents) {
+                int pidx = pr.first;
+                int ov = pr.second;
+                std::cout << "[prev#" << pidx << " ";
+                print_set(pclusters[pidx]);
+                std::cout << " ov=" << ov << "] ";
+              }
+            }
+            std::cout << "\n";
+            for (int atom : clusters[j]) { 
+              std::cout << " atom " << atom << " nn " << pdist[atom] << " > " << frame[atom].nndist << "\t";
+            }
+            std::cout << "\n";
+
+
+          }
+        }
+      }
+      */
+      std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
+      std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
+      std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
+      pclusters = clusters; // save cluster info
+      // save role, tag and cluster info 
+
+    }
+    writeLammpsDump(ofs, time, frame, box);
+
+    /*
+    if (time > 0)  {
+      auto cls = classify_all(pclusters, clusters);
+      int count=0;
+      for (int jj=0; jj<clusters.size(); jj++){
+        if (cls[jj].kind != 4 ){
+          for( const auto& pr : cls[jj].parents) {
+            int pidx = pr.first;
+            if (pclusters[pidx].size() %2 == 1) count++;
+          }
+        }
+      }
+      if (1){
+        std::cout << "Time : " << time << "\n";
+        for (int j=0; j<clusters.size(); j++) {
+          if (cls[j].kind != 4) {
+            std::cout << "child ";
+            print_set(clusters[j]);
+            std::cout << " -> " << cls[j].kind;
+
+            if (!cls[j].parents.empty()) {
+              std::cout << " parents : ";
+              for (const auto& pr : cls[j].parents) {
+                int pidx = pr.first;
+                int ov = pr.second;
+                std::cout << "[prev#" << pidx << " ";
+                print_set(pclusters[pidx]);
+                std::cout << " ov=" << ov << "] ";
+              }
+            }
+            std::cout << "\n";
+          }
+        }
+      }
+    } 
+    */
+
+    
+  
+    //std::vector<int> anionIdx(numatoms, -1);
+    //std::vector<float> nnangl(numatoms, 0);
+    /*
+    updateNN( frame, clusters, distanceMatrix, prole, pswap, tagMap, box);
+  
+  
+    std::vector<int> atom2cluster(ions.size(), -1);
+    for (size_t c = 0; c < clusters.size(); ++c) {
+      for( int atom : clusters[c]) {
+        atom2cluster[atom] = c;
       }
     }
-    // save role, tag and cluster info 
-    std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
-    std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
-    std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
-    pclusters = clusters; // save cluster info
-    //writeLammpsDump(ofs, time, frame, box);
+
+  
+    // construct inverse tag map after updating tag
+    InverseTagMap inverseTagMap;
+    for ( const std::pair< const int, int>& pair : tagMap)  {
+      int atom = pair.first;
+      int tag = pair.second;
+      inverseTagMap[tag] = atom;
+    }
+
+    if ( time == numsnap-1) {
+      for (size_t c = 0; c < clusters.size(); ++c) {
+        std::cout << "Cluster\t" << c+1 << "\tAtoms\t";
+        for( int atom : clusters[c]) {
+          std::cout << inverseTagMap[atom]+1 << " ";
+        }
+        std::cout << "\n";
+      }
+    }
+  
+    for ( int tag = 0; tag < numatoms; tag+=2) {
+      int cation = inverseTagMap[tag];
+      float cd = nndist[cation];
+
+      if ( alter) {
+        cdist[time][tag/2]=cd;
+        anionIndex[time][tag/2] = anionIdx[cation];
+        cangl[time][tag/2] = nnangl[cation];
+      } else {
+        cdist[time][numpion+tag/2]=cd;
+        anionIndex[time][numpion+tag/2] = anionIdx[cation];
+        cangl[time][numpion+tag/2] = nnangl[cation];
+      }
+    }
+    std::vector<Atom> frame;
+    for( int atom =0; atom<numatoms; atom++ ) {
+      //frame.push_back({ atom+1, inverseTagMap[atom]+1, atom%2+1, ions[atom][0], ions[atom][1], ions[atom][2]});
+      // id type role swap tag nndist nnangl nnanion
+      frame.push_back({ atom+1, atom%2+1, role[atom], swapcation[atom], tagMap[atom], nndist[atom], nnangl[atom], anionIdx[atom],ions[atom][0], ions[atom][1], ions[atom][2]});
+    }
+    writeLammpsDump(ofs, time, frame, box);
+    */
   }
   ofs.close();
   std::cout << "Wrote LAMMPS dump to traj.dump\n";
 
-  auto h = makeHistogramAuto( deltaDist, 100);
-  std::ofstream out("displacementHist.dat");
-  printHistogram(h, out);
-
-  float cutone = integratePDF(h, -1, 1);
-  std::cout << "-1 to 1 : " << cutone << std::endl;
-  
 
 
-  /*
+
   std::string outputc = "../data/cnnDist/" + dirName + "D" + rho + "E" + fieldname + ".binary"; ; // nearest neighbor distance
   std::cout << "Output generated : " << outputc << " Rows: " << cdist.size() << " Cols: " << cdist[0].size() << "\n";
-  //printBinary(outputc, cdist);
-  printMatrix(outputc, cdist);
+  printBinary(outputc, cdist);
 
   std::string outputa = "../data/cnnAngle/" + dirName + "D" + rho + "E" + fieldname + ".binary"; ; // nearest neighbor angle
   std::cout << "Output generated : " << outputa << " Rows: " << cangl.size() << " Cols: " << cangl[0].size() << "\n";
   printBinary(outputa, cangl);
-  */
 
 
   std::cout << "\n\n";
 
   return 0;
+
+  /*
+  float conversion = 0; // unit conversion to S cm^2/mol
+  if ( center > 1.5 ) {
+    conversion = -6.022 * 6.022 * 1.6 * 1.6 /4184 * 10000/efield;
+  } else {
+    conversion = 6.022 * 6.022 * 1.6 * 1.6 /4184 * 10000/efield;
+  }
+
+
+  std::vector<float> cmeans;
+  std::vector<float> csems;
+  std::vector<float> ameans;
+  std::vector<float> asems;
+
+  for ( int cation=0; cation < numatoms*numtraj ; cation+=2 ) {
+    std::vector<float> onecurrent = getColumn(allCurrent, cation, conversion);
+    csems.push_back(blockAverage(onecurrent));
+    cmeans.push_back(mean(onecurrent));
+//    std::cout << "Ion " << cation << " mean: " << mean(onecurrent) << " sem : " << csems.back() << "\n";
+  }
+  for ( int anion=1; anion < numatoms*numtraj ; anion+=2 ) {
+    std::vector<float> onecurrent = getColumn(allCurrent, anion, conversion);
+    asems.push_back(blockAverage(onecurrent));
+    ameans.push_back(mean(onecurrent));
+//    std::cout << "Ion " << anion << " mean: " << mean(onecurrent) << " sem : " << asems.back() << "\n";
+  }
+
+  float cferr=0;
+  float cfmean=0;
+  for( int i =0; i<cmeans.size(); i++ ) {
+    cfmean += cmeans[i]/csems[i]/csems[i];
+    cferr += 1/csems[i]/csems[i];
+  }
+  cfmean /= cferr;
+  cferr = std::sqrt(1/cferr);
+  std::cout << "Cation error-weighted mean: " << cfmean << "\tsems:\t" << cferr << "\n";
+
+  float aferr=0;
+  float afmean=0;
+  for( int i =0; i<ameans.size(); i++ ) {
+    afmean += ameans[i]/asems[i]/asems[i];
+    aferr += 1/asems[i]/asems[i];
+  }
+  afmean /= aferr;
+  aferr = std::sqrt(1/aferr);
+  std::cout << "Anion error-weighted mean: " << afmean << "\tsems:\t" << aferr << "\n";
+  std::cout << "Total error-weighted mean: " << (cfmean+afmean)/2 << "\tsems:\t" << std::sqrt((cferr*cferr) + (aferr*aferr))/2 << "\n";
+
+
+  // generate output result
+  std::string resfile = "../results/conductivity/condD" + density + "E" + field;
+  std::ofstream out (resfile );
+  out << std::fixed << std::setprecision(5) << density << "\t\t" << field << "\t\t"  
+    << CUTOFFin << "\t\t" << CUTOFFout <<"\t\t" << numsnap*timestep/1000  << "\t\t"
+    << cfmean << "\t\t" << cferr << "\t\t" << afmean << "\t\t" << aferr << "\t\t" 
+    << (cfmean + afmean)/2 << "\t\t" << std::sqrt( cferr*cferr+aferr*aferr)/2. << "\n";
+  out.close();
+  //std::string outputcurrent= "./results/condCatCondD" + density + "E" + field +".dat";
+  //writeHistogram(outputcurrent, currentargument, currentvec, currentcount);
+
+  return 0;
+  */
 }
