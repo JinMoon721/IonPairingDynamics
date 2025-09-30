@@ -2,16 +2,19 @@
 Analysis code for Ion association/dissociation rate measurement, TPT analysis
 Electric field strength ranged from 0 to 22 meV/A.
 
-## Necessary directories
-./results < place for saving all results 
+## Structure
+./results : all results, including conductivity, rate, 
 ./data/cnnDist ./data/cnnAngl < place for saving conditioend nn info
 ./data/dumps<name>/ < add binary trajectory dump files, format : type, x, y, z
 
+## external library
+use namespace of ioTraj and atom structures, used for organic solvent project
+
 ## note
-conductivity : Required to be run firstly, since it generates all conditioned nearest neighbor list.
+processTraj : Required to be run firstly, since it generates all conditioned nearest neighbor list.
 
 ###
-conductivity:
+processTraj: 
 
 construct graph-based clusters of ion ( cutoff = CUTOFFin). 
 Goal is to generate an order parameter for each ion that will be used as state space definition.
@@ -58,5 +61,28 @@ outputs :
 1. results/hist/rdfD00E00.dat
 File Format
 cnn distance (A) | -ln( g(r)  )|  -ln( g(r) r^2)
+
+
+### datasets details
+data/dumpsLiIinH2O 
+
+data/dumpsLiPF6inACN
+
+data/dumpsNaIinACN
+mostly aggregate even with strong field ~50
+
+data/dumpsLiBF4inACN
+Tom's ACN model with LiBF4
+
+dumps file with partial thermostat, ( apply thermostat only on x and y direction, and only for solvents), are named as Tdumps...
+
+### conductivity
+measure conductivity. 
+if field = 0
+conductivity from Green-Kubo relation is included
+conductivity from Einstein-Helfand equation
+
+otherwise
+conductivity from differential conductivity (linear response around Neq steady state)
 
 

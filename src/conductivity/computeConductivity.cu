@@ -16,11 +16,85 @@
 #include <cassert>
 #include <numeric>
 
+//linear regression
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+
 ////////// Name space ////////////
 using TagMap = std::unordered_map<int, int>;
 using InverseTagMap = std::unordered_map<int, int>;
 using Rows = std::vector<std::vector<int>>;
 ////////// End Name Space ///////////////
+//------------------ progress bar ----------------//
+#include <chrono>
+
+class ProgressBar {
+public:
+  ProgressBar(std::size_t total, std::size_t bar_width = 40,
+              std::string prefix = "Progress")
+      : total_(total), bar_width_(bar_width), prefix_(std::move(prefix)),
+        start_(Clock::now()), last_print_(start_) {}
+
+  // Call with 'done' in [0, total], as your loop advances.
+  void update(std::size_t done) {
+    done = std::min(done, total_);
+    const auto now = Clock::now();
+
+    // Throttle printing to ~10 Hz to avoid spamming stdout.
+    if (done < total_ &&
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_print_).count() < 100)
+      return;
+    last_print_ = now;
+
+    const double frac = total_ ? static_cast<double>(done) / total_ : 1.0;
+    const std::size_t filled = static_cast<std::size_t>(std::round(frac * bar_width_));
+
+    // Rate & ETA
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::seconds>(now - start_).count();
+    const double rate = elapsed > 0 ? static_cast<double>(done) / elapsed : 0.0; // items/s
+    const long long eta_s = (rate > 0.0 && done > 0)
+                                ? static_cast<long long>(std::llround((total_ - done) / rate))
+                                : -1;
+
+    // Build bar
+    std::string bar;
+    bar.reserve(bar_width_);
+    for (std::size_t i = 0; i < bar_width_; ++i) bar += (i < filled ? '#' : ' '); // or '#'
+
+    std::cout << '\r' << prefix_ << " ["
+              << bar << "] "
+              << std::setw(3) << static_cast<int>(std::round(frac * 100)) << "%  "
+              << done << '/' << total_
+              << "  " << std::fixed << std::setprecision(1) << rate << " it/s"
+              << "  ETA: " << format_hms(eta_s)
+              << std::flush;
+
+    if (done >= total_) std::cout << '\n';
+  }
+
+private:
+  using Clock = std::chrono::steady_clock;
+
+  std::size_t total_;
+  std::size_t bar_width_;
+  std::string prefix_;
+  Clock::time_point start_, last_print_;
+
+  static std::string format_hms(long long s) {
+    if (s < 0) return "--:--:--";
+    long long h = s / 3600; s %= 3600;
+    long long m = s / 60;   s %= 60;
+    std::ostringstream oss;
+    oss << std::setw(2) << std::setfill('0') << h << ':'
+        << std::setw(2) << std::setfill('0') << m << ':'
+        << std::setw(2) << std::setfill('0') << s;
+    return oss.str();
+  }
+};
+
+
 
 ///////// Structures ////////////////////
 
@@ -202,6 +276,35 @@ float applyPBC(float x, float box){
   return wrapped - hbox;
 }
 
+float wrapPBC(float x, float bx){
+  return x - bx*std::floor(x/bx);
+}
+
+void checkWrapping( float x, float bx) {
+  if ( x < 0 || x > bx ) {
+    std::cout << "wrapping pbc image doesn't work properly\n\n";
+  }
+}
+
+std::vector<float> constructImageIndex( std::vector<float>& z, int numsnap, int numatoms, float bz) {
+  std::vector<float> iz(numsnap * numatoms, 0.0);
+  for(size_t time=1; time < numsnap; time++ ) {
+    for( size_t atom=0; atom < numatoms; atom++) {
+      int index =  time * numatoms + atom;
+      if( (z[index] - z[index-numatoms]) >  bz/2.0 ) {
+        iz[index] = iz[index-numatoms] -1;
+      } else if ( (z[index] -z[index-numatoms]) < -bz/2.0) {
+        iz[index] = iz[index-numatoms] +1;
+      } else {
+        iz[index] = iz[index-numatoms];
+      }
+    }
+  }
+  return iz;
+}
+
+  
+
 float distance(const Atom& a, const Atom& b, const Box& box) {
   float dx, dy, dz, rsq;
   dx=applyPBC( a.x - b.x, box.x);
@@ -231,530 +334,6 @@ float computeAngle(const std::vector<Atom>& atoms, int cation, int anion, const 
 }
 ///////////////// End basic trajectory analysis
 
-//////////////// Construct Cluster 
-void findClusters(const std::vector<std::vector<int>>& graph, std::vector<std::vector<int>>& clusters, int N) {
-  std::vector<bool> visited(N, false);
-  
-  for (int i = 0; i < N; ++i) {
-    if (!visited[i]) {
-      std::vector<int> cluster;
-      std::queue<int> q;
-      q.push(i);
-      visited[i] = true;
-      
-      while (!q.empty()) {
-        int node = q.front(); q.pop();
-        cluster.push_back(node);
-        
-        for (int neighbor : graph[node]) {
-          if (!visited[neighbor]) {
-            visited[neighbor] = true;
-            q.push(neighbor);
-          }
-        }
-      }
-      
-      clusters.push_back(cluster);
-    }
-  }
-}
-int netCharge(const std::vector<int>& cluster) {
-  int net=0;
-  for( int i =0; i<cluster.size(); i++) {
-    if ( cluster[i] % 2 == 0 ) {
-      net +=1;
-    } else {
-      net -= 1;
-    }
-  }
-  return net;
-}
-/////////////////// End Cluster
-
-/////////////////// Cluster History Analysis
-// Overlap map : prevIdx -> [(currIdx, overlap)]
-// currIdx -> [(prevIdx, overlap)]
-using P2C = std::unordered_map<int, std::vector<std::pair<int,int>>>;
-using C2P = std::unordered_map<int, std::vector<std::pair<int,int>>>;
-
-static void build_overlap_maps(const Rows& prevC, const Rows& currC, P2C& p2c, C2P& c2p) {
-  p2c.clear(); c2p.clear();
-
-  // atom -> prev cluster index
-  std::unordered_map<int, int> atom2prev;
-  atom2prev.reserve(100);
-  for ( int i =0; i < prevC.size(); i++) {
-    for ( int a : prevC[i]) atom2prev[a] = i;
-  }
-
-  for (int j=0; j< currC.size(); j++) {
-    const auto& child = currC[j];
-    std::unordered_map<int, int> contrib; // prev -> overlap count
-    contrib.reserve(8);
-    for (int a: child) {
-      auto it = atom2prev.find(a);
-      if (it != atom2prev.end()) ++contrib[it->second];
-      // contrib : frequency histogram of previous cluster index
-    }
-    for (auto& kv : contrib){
-      p2c[kv.first].push_back({j, kv.second});
-      c2p[j].push_back({kv.first, kv.second});
-    }
-  }
-}
-
-// BFS the small "overlap component" around a child
-static void component_for_child(int childIdx, const P2C& p2c, const C2P& c2p, 
-                                std::unordered_set<int>& prevs,
-                                std::unordered_set<int>& currs)
-{
-  // currs : all child index that are connected to childIdx through any parent set
-  // prevs : all previous cluster indexes composing current cluster
-  prevs.clear(); currs.clear();
-  std::queue<std::pair<bool, int>> q; // (isCurr, index)
-  currs.insert(childIdx);
-  q.push({true, childIdx});
-  while(!q.empty()){
-    auto p = q.front(); q.pop();
-    bool isCurr = p.first;
-    int idx = p.second;
-    if (isCurr) {
-      auto it = c2p.find(idx);
-      if ( it==c2p.end()) continue;
-      for ( auto& pr : it->second){
-        int p= pr.first;
-        if (prevs.insert(p).second) {
-          auto jt = p2c.find(p);
-          if (jt != p2c.end()){
-            for (auto& ch : jt->second){
-              int c = ch.first;
-              if (currs.insert(c).second) q.push({true, c});
-            }
-          }
-        }
-      }
-    } else {
-      auto jt = p2c.find(idx);
-      if (jt == p2c.end()) continue;
-      for ( auto& ch : jt->second){
-        int c=ch.first;
-        if (currs.insert(c).second) q.push({true, c});
-      }
-    }
-  }
-}
-
-// exact set-equality check
-static bool same_set(const std::vector<int>& a, const std::vector<int>& b ){
-  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
-}
-// classify, 1: merge, 2: split, 3: exchange, 4:continuation
-// classify one current cluster indexed by j
-static ChildClassification classify_child(int j, const Rows& prevC, const Rows& currC, const P2C& p2c, const C2P& c2p) {
-  ChildClassification res;
-  res.parents.clear();
-
-  auto it = c2p.find(j);
-  int indeg = (it==c2p.end() ? 0 : (int)it->second.size());
-  if (indeg == 0) {
-    res.kind=0;
-    return res;
-  }
-
-  res.parents = it->second;
-
-  int parent = (indeg==1 ? it->second[0].first : -1 );
-  int parentOutdeg = (indeg==1 ? (int)p2c.at(parent).size() : 0);
-
-  std::unordered_set<int> compPrev, compCurr;
-  component_for_child(j, p2c, c2p, compPrev, compCurr);
-  bool hasSplit = false, hasMerge = false;
-  for (int p : compPrev) {
-    auto jt = p2c.find(p);
-    if (jt != p2c.end() && (int)jt->second.size() >=2) {hasSplit = true; break;}
-  }
-  for (int c : compCurr) {
-    auto kt = c2p.find(c);
-    if (kt != c2p.end() && (int)kt->second.size() >=2) {hasMerge = true; break;}
-  }
-  if ( hasSplit && hasMerge && compPrev.size() >=2 && compCurr.size() >=2 ) { 
-    res.kind = 3;
-    return res;
-  }
- 
-  if (indeg >=2 ) {
-    res.kind = 1; return res;
-  }
-  if (parentOutdeg >= 2) {
-    res.kind=2; return res;
-  }
-  if (same_set(prevC[parent], currC[j])) {
-    res.kind=4; return res;
-  }
-  res.kind=1;
-  return res;
-}
-
-static std::vector<ChildClassification> classify_all(const Rows& prev, const Rows& curr) {
-  P2C p2c; C2P c2p; build_overlap_maps(prev, curr, p2c, c2p);
-
-  std::vector<ChildClassification> out;
-  out.reserve(curr.size());
-  for (int j=0; j< curr.size(); j++) 
-    out.push_back( classify_child(j, prev, curr, p2c, c2p));
-  return out;
-}
-
-static void print_set(const std::vector<int>& v){
-  std::cout << "{";
-  for (size_t i=0; i<v.size(); i++ ){ if (i) std::cout<<","; std::cout<<v[i];}
-  std::cout << "}";
-}
-////////////// End Cluster history analysis
-
-std::vector<int> findLeastConnectedIons(int n, int sign, const std::vector<int>& cluster, const Rows& graph, const std::vector<Atom>& atoms ){
-  if (n<=0) return {};
-  
-  struct Item { int cnt; int idx;};
-  std::vector<Item> items;
-  items.reserve(cluster.size());
-
-  for( int u : cluster) {
-    if (atoms[u].charge != sign) continue; // only ions who have same charge as cluster
-    int cnt = 0; // connected counter ions
-    for (int v : graph[u]) {
-      if (atoms[v].charge != sign) cnt++;
-    }
-    items.push_back({cnt, u});
-  }
-  if (items.empty()) return {};
-
-  auto cmp = [](const Item& a, const Item& b) {
-    if (a.cnt != b.cnt) return a.cnt < b.cnt;
-    return a.idx < b.idx;
-  };
-
-  if( n>= static_cast<int>(items.size())){
-    std::sort(items.begin(), items.end(), cmp);
-  } else{
-    std::nth_element(items.begin(), items.begin() + n, items.end(), cmp);
-    std::sort(items.begin(), items.begin() + n, cmp);
-    items.resize(n);
-  }
-  std::vector<int> result;
-  result.reserve(std::min<int>(n, items.size()));
-  for(const auto& it : items) result.push_back(it.idx);
-  return result;
-}
-
-
-
-
-void findCounterOutside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
-  assert(index >=0 && static_cast<size_t>(index) < atoms.size());
-  const int myCharge = atoms[index].charge;
-  const int needSign = (myCharge > 0 ? -1 : +1);
-
-  int myCluster = -1;
-  for(int cl=0; cl<clusters.size() && myCluster <0; cl++ ){
-    for (int i: clusters[cl]){
-      if (i == index) { myCluster = cl; break;}
-    }
-  }
-  if (myCluster <0 ) std::cout << "Error, current cluster not found\n";
-
-  int bestCluster = -1;
-  float bestClusterDist = std::numeric_limits<float>::infinity();
-
-  for ( int cl = 0; cl < clusters.size(); cl++ ) {
-    if ( cl== myCluster) continue;
-
-    int net = netCharge(clusters[cl]);
-    if ((needSign > 0 && net <= 0) || (needSign < 0 && net >= 0)) {
-      continue;
-    }
-    float minD = std::numeric_limits<float>::infinity();
-    for (int j : clusters[cl]){
-      float d  = distanceMatrix[index][j];
-      if ( d< minD) minD = d;
-    }
-    if( minD < bestClusterDist) {
-      bestClusterDist = minD;
-      bestCluster = cl;
-    }
-  }
-  if (bestCluster < 0 ) {
-    atoms[index].nncounter = -1;
-    atoms[index].nndist = -1.0;
-    std::cout << "Error, counter ion not found\n";
-  }
-
-  int bestAtom = -1;
-  float bestD = std::numeric_limits<float>::infinity();
-
-  for( int j : clusters[bestCluster]) {
-    //if (atoms[j].charge == needSign && atoms[j].role == 1 ) { 
-    if (atoms[j].charge == needSign ) { // role 2 can be a candidate 
-      float d = distanceMatrix[index][j];
-      if (d<bestD) { bestD = d; bestAtom = j;}
-    }
-  }
-  if (bestAtom < 0) {
-    std::cout << "Out Error, cannot find best ion for " << index << "\n\n";
-  }
-  atoms[index].nncounter = bestAtom;
-  atoms[index].nndist = bestD;
-  atoms[index].nnangl = computeAngle(atoms, index, bestAtom, box);
-}
-
-
-void findCounterInside (int index, std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
-  assert(index >=0 && static_cast<size_t>(index) < atoms.size());
-  const int myCharge = atoms[index].charge;
-  const int needSign = (myCharge > 0 ? -1 : +1);
-
-  int myCluster = -1;
-  for(int cl=0; cl<clusters.size() && myCluster <0; cl++ ){
-    for (int i: clusters[cl]){
-      if (i == index) { myCluster = cl; break;}
-    }
-  }
-  if (myCluster <0 ) std::cout << "Error, current cluster not found\n";
-
-  int bestAtom = -1;
-  float bestD = std::numeric_limits<float>::infinity();
-
-  for( int j : clusters[myCluster]) {
-    if ( j== index) continue;
-    if (atoms[j].charge == needSign && atoms[j].role == 2 ) { 
-      float d = distanceMatrix[index][j];
-      if (d<bestD) { bestD = d; bestAtom = j;}
-    }
-  }
-  if (bestAtom < 0) {
-    std::cout << "In Error, cannot find best ion for " << index << "\n\n";
-  }
-  atoms[index].nncounter = bestAtom;
-  atoms[index].nndist = bestD;
-  atoms[index].nnangl = computeAngle(atoms, index, bestAtom, box);
-}
-
-void findCounterIons (std::vector<Atom>& atoms, const std::vector<std::vector<int>>& clusters, const std::vector<std::vector<float>>& distanceMatrix, const Box& box) {
-  for ( int atom = 0; atom < atoms.size(); atom++ ) {
-    if ( atoms[atom].role == 1 ) {
-      findCounterOutside(atom, atoms, clusters, distanceMatrix, box); // find counter ion, measure distance and angle
-    } else if ( atoms[atom].role == 2 ) {
-      findCounterInside(atom, atoms, clusters, distanceMatrix, box);
-    } else {
-      std::cout << "Role is not defined for " << atom << "\n";
-    }
-  }
-}
-
-
-
-void roleAssignment(const std::vector<std::vector<int>>& clusters, std::vector<Atom>& atoms, std::vector<std::vector<int>>& graph, const std::vector<std::vector<float>>& distanceMatrix, const Box& box ){
-  for ( const auto& cl : clusters) {
-    for ( int member : cl) {
-      atoms[member].role = 2;
-    }
-    int net = netCharge(cl);
-    if (net == 0) continue;
-
-    const int q = std::abs(net);
-    const int sign = (net > 0 ? +1 : -1);
-
-    std::vector<int> candidates;  //ions having same charge as cluster
-    std::vector<int> candidatesNN;  //nearest neighbor opposite charged cluster
-    for( int member : cl) {
-      if (atoms[member].charge == sign ) candidates.push_back(member);
-    }
-    // need to assign "q" ions as role 1 from candidates
-    if( q==candidates.size()){
-      for(int atom : candidates) {
-        atoms[atom].role = 1;
-      }
-    } else {
-      std::vector<std::pair<int, float>> id2dist;
-      for(int atom : candidates) {
-        findCounterOutside(atom, atoms, clusters, distanceMatrix, box);
-        id2dist.emplace_back(atom, atoms[atom].nndist);
-      }
-      std::sort(id2dist.begin(), id2dist.end(), 
-          [](const auto& a , const auto& b) {
-          return a.second < b.second;//assending order
-          });
-      for( int n=0; n<q; n++) {
-        atoms[id2dist[n].first].role = 1;
-        if( graph[id2dist[n].first].size() > 1 ) {
-          std::swap(atoms[id2dist[n].first].role, atoms[id2dist[q].first].role);
-        }
-      }
-    }
-  }
-}
-
-void updateTagMerge(const std::vector<std::vector<int>>& clusters, const Rows& pclusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
-  auto cls = classify_all(pclusters, clusters);
-  for( int icl=0; icl< clusters.size(); icl++ ) {
-    if( cls[icl].kind == 4 || cls[icl].kind==1) {
-      auto cl = clusters[icl];
-      int net = netCharge(cl);
-      if (net == 0) continue;
-
-      const int q = std::abs(net);
-      const int sign = (net > 0 ? +1 : -1);
-
-      std::vector<int> candidates;
-      candidates.reserve(cl.size());
-      for( int member : cl) {
-        if (atoms[member].charge == sign ) candidates.push_back(member);
-      }
-
-      const int take = std::min<int>(q, static_cast<int>(candidates.size()));
-      if (take < candidates.size() ) { // when ambiguity in determining role
-        std::vector<int> deltaRole;
-        for ( int k : candidates) deltaRole.push_back( atoms[k].role - proles[k]);
-        int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-        int sum = std::accumulate(deltaRole.begin(), deltaRole.end(), 0);
-        if ( nonzeros >= 2 ) {
-          int first = deltaRole.size();
-          int second = deltaRole.size();
-          for ( int i = 0; i<deltaRole.size(); i++ ) {
-            if (deltaRole[i] != 0) {
-              if ( first == deltaRole.size()){ first = i;}
-              else { second = i; break; }
-            }
-          }
-          //std::swap(atoms[candidates[first]].role, atoms[candidates[second]].role );
-          std::swap(atoms[candidates[first]].tag, atoms[candidates[second]].tag );
-          //std::cout << "MERGE/CONT " << time << " " << candidates[first] << " " << candidates[second] << "\n";
-        }else if (nonzeros > 2) {
-          std::cout << "merge, nonzeros > 2\n";
-        }
-      }
-    }
-  }
-}
-
-void updateTag(const Rows& clusters, const Rows& pclusters, std::vector<Atom>& atoms, std::vector<int>& proles, int time) {
-  auto cls = classify_all(pclusters, clusters);
-  std::vector<int> parentsIndex; // all parents who dissociate
-  for( int cl=0; cl < clusters.size(); cl++ ) {
-    if( cls[cl].kind == 2 ) { // if cluster cl experienced dissociation
-      for(const auto& pr : cls[cl].parents) {
-        parentsIndex.push_back(pr.first);
-      }
-    }
-  }
-  if(!parentsIndex.empty()) {
-    std::sort(parentsIndex.begin(), parentsIndex.end());
-    auto last = std::unique(parentsIndex.begin(), parentsIndex.end());
-    parentsIndex.erase(last, parentsIndex.end());
-    for( int cl : parentsIndex) {
-      std::vector<int> deltaRole;
-      for( int candidate : pclusters[cl]) {
-        deltaRole.push_back( atoms[candidate].role - proles[candidate]);
-      }
-      int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-      //std::cout << "Time " << time <<" dissociation with # nonzeros " << nonzeros << "\n";
-      if (nonzeros >= 2) {
-        std::vector<int> neg, pos;
-        for ( int i = 0 ; i < deltaRole.size(); i++ ){
-          if(deltaRole[i] == -1) neg.push_back(pclusters[cl][i]);
-          else if (deltaRole[i] == 1) pos.push_back(pclusters[cl][i]);
-        }
-
-        int n = std::min(neg.size(), pos.size());
-        for(int k=0; k<n; k++){
-          std::swap( atoms[neg[k]].tag, atoms[pos[k]].tag);
-          //std::cout << "DISS " << time << " " << neg[k] << " " << pos[k] << "\n";
-        }
-      } else if ( nonzeros >=3 ) {
-        std::cout << "parents has more nonzeros\n";
-      }
-    }
-  }
-
-  std::vector<int> ingredients;
-  for( int cl=0; cl < clusters.size(); cl++ ) {
-    if( cls[cl].kind == 3 ) { // if cluster cl experienced exchange
-      for( int atom : clusters[cl]) {
-        ingredients.push_back(atom);
-      }
-    }
-  }
-  if(!ingredients.empty()) {
-    std::cout << "EXCH " << time << " ";
-    for( int elem : ingredients) { std::cout << elem << " ";}
-    std::cout << "\n";
-    std::vector<int> deltaRole;
-    for( int candidate : ingredients) {
-      deltaRole.push_back( atoms[candidate].role - proles[candidate]);
-    }
-    int nonzeros = std::count_if(deltaRole.begin(), deltaRole.end(), [](int x) { return x != 0; } );
-    //std::cout << "Time " << time << " exchange with # nonzeros " << nonzeros << "\n";
-    if (nonzeros >= 2) {
-      std::vector<int> neg, pos;
-      for ( int i = 0 ; i < deltaRole.size(); i++ ){
-        if(deltaRole[i] == -1) neg.push_back(ingredients[i]);
-        else if (deltaRole[i] == 1) pos.push_back(ingredients[i]);
-      }
-
-      int n = std::min(neg.size(), pos.size());
-      for(int k=0; k<n; k++){
-        std::swap( atoms[neg[k]].tag, atoms[pos[k]].tag);
-        std::cout << "EXCH " << time << " " << neg[k] << " " << pos[k] << "\n";
-      }
-    } else if ( nonzeros >=3 ) {
-      std::cout << "ingredients has more nonzeros\n";
-    }
-  }
-}
-
-struct indexTag {
-  int tag;
-  int pid;
-  int cid;
-};
-
-void detectJump( const std::vector<Atom>& atoms, const std::vector<float>& pdist ,const std::vector<int> ptags, float CUTOFFin, float CUTOFFout, int time) {
-  std::vector<indexTag> idx;
-  for ( int tag =0; tag<pdist.size(); tag++){  
-    float prevDist = 0;
-    int index;
-    auto it = std::find(ptags.begin(), ptags.end(), tag);
-    if ( it == ptags.end() ) {
-      std::cout << "Previous, cannot find properly tagged particle\n\n";
-    } else {
-      index = std::distance(ptags.begin(), it);
-      prevDist = pdist[index];
-    }
-
-    float currDist = 0;
-    auto cit = std::find_if( atoms.begin(), atoms.end(), [tag](const Atom& a ){ return a.tag == tag; });
-    if (cit == atoms.end()) { 
-      std::cout << "Current  cannot find properly tagged particle\n\n";
-    } else {
-      currDist = cit->nndist;
-    }
-      
-    if (std::fabs(currDist - prevDist) > (CUTOFFout - CUTOFFin) ) {
-      idx.emplace_back( indexTag{tag, index, cit->id});
-    }
-  }
-  // idx contains tags of jumped particles
-  if(!idx.empty()){ 
-    for (auto& mem : idx) {
-      if ( pdist[mem.pid] > CUTOFFout && atoms[mem.cid].nndist < CUTOFFin ) {
-        std::cout << "Jump from out to in | time " << time << " | pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-      if ( pdist[mem.pid] < CUTOFFin && atoms[mem.cid].nndist > CUTOFFout ) {
-        std::cout << "Jump from in to out | time " << time << "  pid " << mem.pid << " pdist " << pdist[mem.pid] << " cid " << mem.cid << " cdist " << atoms[mem.cid].nndist << "\n";
-      }
-    }
-  }
-}
 
 
 ////////// Statistics
@@ -811,7 +390,7 @@ std::vector<float> normalizePDF(const Histogram& h) {
 void printHistogram( const Histogram& h, std::ostream& os = std::cout) {
   std::vector<float> pdf = normalizePDF(h);
   os.setf(std::ios::fixed);
-  os << std::setprecision(6);
+  os << std::setprecision(10);
   for( size_t i =0; i< h.edges.size(); i++ ) {
     float x = 0.5 * (h.edges[i] + h.edges[i+1]);
     os << x << "\t" << pdf[i] << "\n";
@@ -973,18 +552,280 @@ float fieldConvert(const std::string& s) {
   return std::stof(s);
 }
 
+float trapz(const std::vector<float>& x, const std::vector<float>& y) {
+  size_t n = x.size();
+  float sum = 0;
+  for( size_t i=0; i<n-1; i++ ) {
+    float dx = x[i+1] - x[i];
+    sum += (y[i] + y[i+1]) * dx * 0.5;
+  }
+  return sum;
+}
+
+
+struct LinRegResult {
+  float slope;      // b
+  float intercept;  // a
+  float r2;         // coefficient of determination
+  float sse;        // sum of squared residuals
+  float sst;        // total sum of squares (about mean of y)
+  std::size_t n;    // number of points
+};
+
+inline LinRegResult linear_fit(const std::vector<float>& x,
+                               const std::vector<float>& y)
+{
+  if (x.size() != y.size())
+    throw std::invalid_argument("x and y must have the same length");
+  const std::size_t n = x.size();
+  if (n < 2)
+    throw std::invalid_argument("need at least 2 points");
+
+  // Accumulate sums
+  long double Sx = 0.0L, Sy = 0.0L, Sxx = 0.0L, Sxy = 0.0L, Syy = 0.0L;
+  for (std::size_t i = 0; i < n; ++i) {
+    const long double xi = x[i];
+    const long double yi = y[i];
+    Sx  += xi;
+    Sy  += yi;
+    Sxx += xi * xi;
+    Sxy += xi * yi;
+    Syy += yi * yi;
+  }
+
+  const long double nL = static_cast<long double>(n);
+  const long double denom_x = nL * Sxx - Sx * Sx;
+  const long double denom_y = nL * Syy - Sy * Sy;
+
+  if (std::abs(denom_x) == 0.0L) {
+    // All x are identical -> vertical line; slope undefined
+    return {std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            std::numeric_limits<float>::quiet_NaN(),
+            n};
+  }
+
+  const long double b = (nL * Sxy - Sx * Sy) / denom_x;   // slope
+  const long double a = (Sy - b * Sx) / nL;               // intercept
+
+  // Compute SSE and SST to report R^2 via 1 - SSE/SST
+  const long double ybar = Sy / nL;
+  long double SSE = 0.0L; // residual sum of squares
+  long double SST = 0.0L; // total sum of squares
+  for (std::size_t i = 0; i < n; ++i) {
+    const long double yi = y[i];
+    const long double fi = a + b * x[i];
+    const long double ri = yi - fi;
+    SSE += ri * ri;
+    const long double dy = yi - ybar;
+    SST += dy * dy;
+  }
+
+  float r2;
+  if (SST > 0.0L) {
+    r2 = static_cast<float>(1.0L - SSE / SST);
+  } else {
+    // All y identical: define R^2 = 1 if SSE == 0 (perfect fit), else 0
+    r2 = (SSE == 0.0L) ? 1.0f : 0.0f;
+  }
+
+  return {static_cast<float>(b),
+          static_cast<float>(a),
+          r2,
+          static_cast<float>(SSE),
+          static_cast<float>(SST),
+          n};
+}
+
+
+
+float GreenKubo( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, int dt, size_t numsnap, int numatoms, float timestep) {
+  //dt : number of timestep to be used for velocity estimate
+  std::vector<float> Jz; Jz.reserve(numsnap);
+  for( size_t time=dt; time<numsnap-dt; time++) {
+    float current = 0;
+    for ( int atom=0; atom< numatoms; atom++) {
+      int index = numatoms * time + atom;
+      float disp = unwrapped[index + dt*numatoms] - unwrapped[index - dt*numatoms]; 
+      current += charges[index] * disp/2.0/dt/timestep ; // C A/ps
+    }
+    Jz.push_back(current);
+  }
+
+  int maxTime=200; // 100 timesteps = 5ps
+  std::vector<float> interval;
+  std::vector<float> ACF;
+  for( int intv = 0; intv < maxTime; intv++){
+    interval.push_back(intv*timestep);
+    float mean;
+    for( size_t time=0; time < Jz.size()-maxTime-1; time++ ) {
+      float val = Jz[time+intv] * Jz[time];
+      mean += (val - mean) / (time+1);
+    }
+    ACF.push_back(mean);
+  }
+  //for(int i =0; i< ACF.size(); i++) std::cout << "t " << interval[i] << " ACF " << ACF[i] << "\n";
+  
+  float kBT = 0.592*4184; // J/mol
+  float sigma =  trapz(interval, ACF) / volume / kBT;
+  sigma = sigma *96485 * 96485 / 60.2;
+
+  return sigma;
+}
+
+float EinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, int dt, size_t numsnap, int numatoms, float timestep) {
+  //dt : number of timestep to be used for velocity estimate
+
+  std::vector<int> interval;
+  for(int intv=40; intv < 400; intv++ ) {
+    interval.push_back(intv);
+  }
+
+  std::vector<float> meansqG;
+  for( int intv : interval) {
+    float Gsq=0; // time integrated current, 
+    for ( size_t time=intv; time < numsnap - intv; time++ ) {
+      float frameG = 0;
+      for( int atom=0; atom < numatoms; atom++ ) {
+        int index = numatoms*time + atom;
+        float disp = unwrapped[index +intv*numatoms] - unwrapped[index];
+        frameG += charges[index] * disp;
+      }
+      Gsq+= ( frameG*frameG - Gsq) / (time-intv+1);
+    }
+    meansqG.push_back(Gsq);
+  }
+  std::vector<float> time;
+  for(int i=0; i<meansqG.size(); i++) {
+  //  std::cout << " x " << interval[i] << " y " << meansqG[i] << "\n";
+    time.push_back( interval[i] * timestep);
+  }
+
+  LinRegResult res = linear_fit(time, meansqG);
+
+  /*
+  std::cout << "\nLinear Regression Summary\n";
+  std::cout << "slope b      = " << res.slope << "\n";
+  std::cout << "intercept a  = " << res.intercept << "\n";
+  std::cout << "R^2          = " << res.r2 << "\n";
+  std::cout << "SSE          = " << res.sse << "\n";
+  std::cout << "n            = " << res.n << "\n";
+  */
+
+  float kBT = 0.592*4184; // J/mol
+  float sigma = res.slope /2/volume/kBT;
+  sigma = sigma *96485 * 96485 / 60.2;
+  return sigma;
+}
+
+float NernstEinstein( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, size_t numsnap, int numatoms, float timestep){
+  std::vector<int> interval;
+  for(int intv=40; intv < 400; intv++ ) {
+    interval.push_back(intv);
+  }
+
+  std::vector<float> meansqDc;
+  std::vector<float> meansqDa;
+  for( int intv : interval) {
+    float Dsqc=0, Dsqa=0; // displacement square for cation and anion
+    float countc=0, counta=0;
+    for ( size_t time=intv; time < numsnap - intv; time++ ) {
+      for( int atom=0; atom < numatoms; atom++ ) {
+        int index = numatoms*time + atom;
+        float disp = unwrapped[index +intv*numatoms] - unwrapped[index];
+        if ( charges[index] == 1 ) {
+          Dsqc += (disp * disp);
+          countc += 1;
+        } else {
+          Dsqa += (disp*disp);
+          counta += 1;
+        }
+      }
+    }
+    meansqDc.push_back(Dsqc/countc);
+    meansqDa.push_back(Dsqa/counta);
+  }
+  std::vector<float> time;
+  for(int i=0; i<meansqDc.size(); i++) {
+    time.push_back( interval[i] * timestep);
+  }
+
+  LinRegResult resc = linear_fit(time, meansqDc);
+  LinRegResult resa = linear_fit(time, meansqDa);
+
+  /*
+  std::cout << "\nLinear Regression Summary\n";
+  std::cout << "Cation\n";
+  std::cout << "slope b      = " << resc.slope << "\n";
+  std::cout << "R^2          = " << resc.r2 << "\n";
+  std::cout << "Cation\n";
+  std::cout << "slope b      = " << resa.slope << "\n";
+  std::cout << "R^2          = " << resa.r2 << "\n";
+  */
+
+  float Dc = resc.slope ; // A^2/ps
+  float Da = resa.slope ; // A^2/ps
+
+  std::cout << "Diffusion Coefficient: Dc " << Dc * 0.01*1000 << " Da " << Da * 0.01*1000 << "\n";
+
+  float kBT = 0.592*4184; // J/mol
+  float lambda = 0.5 * (Dc+Da)*10 * (96485.0*96485.0/100000.0) / kBT;
+  return lambda;
+
+}
+  
+float Response( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, size_t numsnap, int numatoms, float timestep, float fieldStrength) {
+  //dt : number of timestep to be used for velocity estimate
+  int dt=1;
+  std::vector<float> Jz; Jz.reserve(numsnap);
+  for( size_t time=dt; time<numsnap-dt; time++) {
+    float current = 0;
+    for ( int atom=0; atom< numatoms; atom++) {
+      int index = numatoms * time + atom;
+      float disp = unwrapped[index + dt*numatoms] - unwrapped[index - dt*numatoms]; 
+      current += charges[index] * disp/2.0/dt/timestep ; // C A/ps
+    }
+    Jz.push_back(current);
+  }
+
+  float meanFlux = mean(Jz);
+
+  float kBT = 0.592*4184; // J/mol
+  meanFlux = meanFlux * 96485 * 96485 /kBT/ (1.0/25.0) / 10000 / fieldStrength / numatoms;
+
+  return meanFlux;
+}
+
+
+
+
+
+
+  
+
 ///////////End statistics
 
 int main(int argc, char* argv[]) {
-  if (argc != 11 ) {
+  int thermoflag=0;
+  if (argc < 11 ) {
     std::cerr << "Error: Not enough arguments.\n" ;
     std::cerr << "Usage : " << argv[0] << "dir_name density field cutoff_in(A) cutoff_out(A) boxX(A) boxY(A) boxZ(A) timestep(ps)  eqtime(ns) \n";
     return 1;
+  } else if (argc>11) {
+    thermoflag=static_cast<int>(std::stoi(argv[11]));// if 1: use partial thermostat dataset, starting with Tdump..
+  } else {
+    std::cerr << "Error: Too much  arguments.\n" ;
+    std::cerr << "Usage : " << argv[0] << "dir_name density field cutoff_in(A) cutoff_out(A) boxX(A) boxY(A) boxZ(A) timestep(ps)  eqtime(ns) \n";
   }
 
   std::string dirName=argv[1]; // name of directory to output results, in results directory
   std::string rho = argv[2]; 
-  float density = std::stof(rho)* 0.1; // density in M unit
+  //float density = std::stof(rho)* 0.1; // density in M unit
+  int n = rho.size();
+  long long val = std::stoll(rho);
+  float density = static_cast<float>(val) / std::pow(10.0, n-1);
   float boxX = std::stof(argv[6]); // box size in A unit
   float boxY = std::stof(argv[7]);
   float boxZ = std::stof(argv[8]); 
@@ -999,7 +840,9 @@ int main(int argc, char* argv[]) {
   float CUTOFFout = std::stof(argv[5]);
   float timestep = std::stof(argv[9]); // ps unit
   float eqtime = std::stof(argv[10]); // ns unit
+  
 
+  std::cout << "\nConductivity Measruement\n";
   std::cout << "\nAnalysis Setups\n";
   std::cout << "dump Directory : ../data/dumps" << dirName << "/\n"; 
   std::cout << "output Directory : ../results/" << dirName << "/\n"; 
@@ -1012,10 +855,15 @@ int main(int argc, char* argv[]) {
   std::cout << "eqTime: " << eqtime << " ns\n";
   std::cout << "\n\n";
 
+
   std::cout << "Dump Reading Starts\n";
   int numsnap;
   std::vector<std::vector<float>> traj;
-  std::string inputFileName = "../data/dumps" + dirName + "/dumpD" + rho + "E" + fieldname + ".binary";
+  std::string inputFileName;
+  if (thermoflag == 1) { inputFileName = std::string("../data/dumps") + dirName + "/TdumpD" + rho + "E" + fieldname + ".binary";}
+  else if (thermoflag == 2) { inputFileName = std::string("../data/dumps") + dirName + "/TTdumpD" + rho + "E" + fieldname + ".binary";}
+  else {inputFileName = std::string("../data/dumps") + dirName + "/dumpD" + rho + "E" + fieldname + ".binary";}
+  std::cout << "READ dump file at " << inputFileName << "\n";
   traj = readBinary(inputFileName);
   if (traj.size() % numatoms != 0) {
     std::cout << "\n\nError in trajectory size or number of atoms\n\n";
@@ -1040,29 +888,29 @@ int main(int argc, char* argv[]) {
     alter=false;
   }
 
-  //collect all time series of reduced trajectory
-  std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor distance, A unit
-  std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
-
-  // placeholder for previous frame Atom properties
-  std::vector<int> proles(numatoms, -1);
-  std::vector<int> ptags(numatoms);
-  std::iota(ptags.begin(), ptags.end(), 0);
-  std::vector<float> pdist(numatoms, -1);
-  std::vector<std::vector<int>> pclusters;
-
   std::vector<float> deltaDist;
 
-  // save visualization for each time step
-  std::ofstream ofs("video.lammpstrj");
-  if (!ofs) {
-    std::cerr << "Error. Cannot open the file\n";
-    return 1;
-  }
   
-  int st=500000;
+  int st=0;
+  int ed=numsnap;
+  ProgressBar pb(numsnap, /*bar_width=*/50, "Analyzing");
+  int every=numsnap/100;
+  
+  std::vector<float> unwrappedX(numsnap * numatoms, 0.0);
+  std::vector<float> wrappedX(numsnap * numatoms, 0.0);
+  std::vector<float> imageX;
+
+  std::vector<float> unwrappedY(numsnap * numatoms, 0.0);
+  std::vector<float> wrappedY(numsnap * numatoms, 0.0);
+  std::vector<float> imageY;
+
+  std::vector<float> unwrappedZ(numsnap * numatoms, 0.0);
+  std::vector<float> wrappedZ(numsnap * numatoms, 0.0);
+  std::vector<float> imageZ;
+  std::vector<float> charges(numsnap* numatoms, 0.0);
+
   //for (int time= st; time<numsnap; time++){
-  for (int time= st; time<st+20000; time++){
+  for (int time= st; time<ed; time++){
     std::vector<Atom> frame; // id charge role swap tag nndist nnangl nnanion x y z
     //get one frame
     int init = time*numatoms;
@@ -1078,88 +926,97 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    // construct a graph and distance matrix
-    std::vector<std::vector<int>> graph(numatoms);
-    std::vector<std::vector<float>> distanceMatrix(numatoms, std::vector<float>(numatoms, 0.0));
-    for ( int i=0; i<numatoms; i++ ){
-      for ( int j=i+1; j<numatoms; j++ ){
-        float d = distance(frame[i], frame[j], box);
-        distanceMatrix[i][j] = d;
-        distanceMatrix[j][i] = d;
-        if (d < CUTOFFin) {
-          graph[i].push_back(j);
-          graph[j].push_back(i);
-        }
-      }
+    // wrapPBC first before assigning image index
+    
+    for( int atom=0; atom < numatoms; atom++) {
+      int index = time*numatoms + atom;
+      wrappedX[index] = wrapPBC(frame[atom].x, box.x);
+      wrappedY[index] = wrapPBC(frame[atom].y, box.y);
+      wrappedZ[index] = wrapPBC(frame[atom].z, box.z);
+      //checkWrapping(wrappedZ[index], box.z);
+      charges[index]=frame[atom].charge;
     }
 
-    // construct clusters, BFS algorithm
-    std::vector<std::vector<int>> clusters;
-    findClusters(graph, clusters, numatoms);
-
-    // Analysis
-    if ( time == st ) {
-      for(auto& atom : frame) atom.tag = atom.id; // initialize tag
-      roleAssignment(clusters, frame, graph, distanceMatrix, box); // frame[i].role determines whether it finds counter ion inside or outside of cluster
-      findCounterIons(frame, clusters, distanceMatrix, box); // based on role, find conditioned counter ion (index, dist, angl)
-
-    } else {
-      for(auto& atom : frame) atom.tag = ptags[atom.id]; // update tag
-      roleAssignment(clusters, frame, graph, distanceMatrix, box);
-      findCounterIons(frame, clusters, distanceMatrix, box);
-      updateTagMerge(clusters,pclusters,  frame,  proles, time); // merge or continue
-      updateTag(clusters, pclusters, frame, proles, time);  // dissociate or exchange
-
-      detectJump(frame, pdist, ptags, CUTOFFin, CUTOFFout, time); // list of tags
-
-      for(int tagg=0; tagg<numatoms; tagg++) {
-        auto it = std::find_if(frame.begin(), frame.end(), [tagg](const Atom& a){return a.tag==tagg;});
-        cdist[time][tagg] = it->nndist;
-        cangl[time][tagg] = it->nnangl;
-      }
-
-      for( int tag =0; tag < numatoms; tag++ ) {
-        int pid, cid;
-        auto it = std::find( ptags.begin(), ptags.end(), tag);
-        if (it != ptags.end()) {
-          pid = std::distance(ptags.begin(), it);
-        }
-        auto cit = std::find_if(frame.begin(), frame.end(), [tag](const Atom& a) {return a.tag == tag;});
-        if (cit != frame.end()){
-          cid = cit->id;
-        }
-        deltaDist.push_back(cit->nndist - pdist[pid] );
-      }
-    }
-    // save role, tag and cluster info 
-    std::transform(frame.begin(), frame.end(), proles.begin(),[](const Atom& a){ return a.role;}); // save roles
-    std::transform(frame.begin(), frame.end(), ptags.begin(),[](const Atom& a){ return a.tag;}); // save tags
-    std::transform(frame.begin(), frame.end(), pdist.begin(),[](const Atom& a){ return a.nndist;}); // save prev nn dist
-    pclusters = clusters; // save cluster info
-    //writeLammpsDump(ofs, time, frame, box);
+    if( time%every == 0 ) pb.update(time+1);
   }
-  ofs.close();
-  std::cout << "Wrote LAMMPS dump to traj.dump\n";
 
-  auto h = makeHistogramAuto( deltaDist, 100);
-  std::ofstream out("displacementHist.dat");
-  printHistogram(h, out);
+  imageX = constructImageIndex(wrappedX,numsnap, numatoms, box.x);
+  imageY = constructImageIndex(wrappedY,numsnap, numatoms, box.y);
+  imageZ = constructImageIndex(wrappedZ,numsnap, numatoms, box.z);
+  for(size_t element=0; element < imageZ.size(); element++ ) {
+    unwrappedX[element] = wrappedX[element] + imageX[element]* box.x;
+    unwrappedY[element] = wrappedY[element] + imageY[element]* box.y;
+    unwrappedZ[element] = wrappedZ[element] + imageZ[element]* box.z;
+  }
 
-  float cutone = integratePDF(h, -1, 1);
-  std::cout << "-1 to 1 : " << cutone << std::endl;
-  
+  Box conductivityGK; // Green-Kubo
+  Box conductivityEH; // Einstein-Helfand
+  Box conductivityNE; // Nernst-Einstein
+  float volume = box.x * box.y * box.z; // A^3
+
+  std::cout << std::fixed << std::setprecision(6);
+
+  if ( field==0) {
+    conductivityGK.x = GreenKubo(unwrappedX, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
+    conductivityGK.y = GreenKubo(unwrappedY, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
+    conductivityGK.z = GreenKubo(unwrappedZ, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
+    std::cout << "\nGreen-Kubo conductivity\n";
+    //std::cout << "conductivity : " << conductivityGK << "S / m\n";
+    std::cout << "molar conductivity x " << conductivityGK.x * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity y " << conductivityGK.y * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity z " << conductivityGK.z * 10 / (density*2.0)  << " S cm^2/mol\n";
+
+    conductivityEH.x = EinsteinHelfand(unwrappedX, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
+    conductivityEH.y = EinsteinHelfand(unwrappedY, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
+    conductivityEH.z = EinsteinHelfand(unwrappedZ, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
+    std::cout << "\nEinstein-Helfand conductivity\n";
+    std::cout << "molar conductivity x  " << conductivityEH.x * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity y  " << conductivityEH.y * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity z  " << conductivityEH.z * 10 / (density*2.0)  << " S cm^2/mol\n";
+
+
+    conductivityNE.x = NernstEinstein(unwrappedX, charges, volume, numsnap, numatoms, timestep);
+    conductivityNE.y = NernstEinstein(unwrappedY, charges, volume, numsnap, numatoms, timestep);
+    conductivityNE.z = NernstEinstein(unwrappedZ, charges, volume, numsnap, numatoms, timestep);
+    std::cout << "\nNernst-Einstein conductivity\n";
+    std::cout << "molar conductivity x " << conductivityNE.x   << " S cm^2/mol\n";
+    std::cout << "molar conductivity y " << conductivityNE.y   << " S cm^2/mol\n";
+    std::cout << "molar conductivity z " << conductivityNE.z   << " S cm^2/mol\n";
+  }
+  else {
+    Box response; // <J>/E, not differential conductivity
+    response.x = Response(unwrappedX, charges, volume, numsnap, numatoms, timestep, field*fconversion);
+    response.y = Response(unwrappedY, charges, volume, numsnap, numatoms, timestep, field*fconversion);
+    response.z = Response(unwrappedZ, charges, volume, numsnap, numatoms, timestep, field*fconversion);
+    std::cout << "\nResponse x " << response.x   << " S cm^2/mol\n";
+    std::cout << "Response y " << response.y   << " S cm^2/mol\n";
+    std::cout << "Response z " << response.z   << " S cm^2/mol\n";
+  }
 
 
   /*
-  std::string outputc = "../data/cnnDist/" + dirName + "D" + rho + "E" + fieldname + ".binary"; ; // nearest neighbor distance
-  std::cout << "Output generated : " << outputc << " Rows: " << cdist.size() << " Cols: " << cdist[0].size() << "\n";
-  //printBinary(outputc, cdist);
-  printMatrix(outputc, cdist);
-
-  std::string outputa = "../data/cnnAngle/" + dirName + "D" + rho + "E" + fieldname + ".binary"; ; // nearest neighbor angle
-  std::cout << "Output generated : " << outputa << " Rows: " << cangl.size() << " Cols: " << cangl[0].size() << "\n";
-  printBinary(outputa, cangl);
+  for(size_t time=0; time<1000; time++) {
+    int index = time*numatoms +1;
+    std::cout << "raw " << unwrappedZ[index] << " wrapped " << wrappedZ[index] << " imageID " << imageZ[index] << "\n";
+  }
   */
+
+  /*
+  float conductivityEH=0; // Einstein-Helfand
+  float flux=0; // current flux for differential conductivity
+
+  if ( field==0) {
+    conductivityGK = GreenKubo();
+    conductivityEH = EinsteinHelfand();
+  }
+
+  flux = measureFlux();
+
+  if (field==0) {
+    std::cout << "\nZero Field Conductivity Results\n" << "Green-Kubo : " << conductivityGK << "mS/A" ...
+
+
+    */
 
 
   std::cout << "\n\n";
