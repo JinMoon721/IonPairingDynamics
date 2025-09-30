@@ -1,4 +1,4 @@
-# LiHalides
+# IonPairingDynamics
 Analysis code for Ion association/dissociation rate measurement, TPT analysis
 Electric field strength ranged from 0 to 22 meV/A.
 
