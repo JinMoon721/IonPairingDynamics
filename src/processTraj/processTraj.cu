@@ -245,6 +245,22 @@ void printBinary(std::string& file,  std::vector<std::vector<float>>& matrix){
 
   out.close();
 }
+void printBinaryInt(std::string& file,  std::vector<std::vector<int>>& matrix){
+  std::cout << "Binary Output File generated: " << file << std::endl;
+  std::cout << "Rows: " << matrix.size() << ", Columns: " << (matrix.empty() ? 0 : matrix[0].size()) << std::endl;
+
+  std::ofstream out ( file, std::ios::binary);
+  int rows = matrix.size();
+  int cols = matrix[0].size();
+  out.write(reinterpret_cast<const char*>(&rows), sizeof(int));
+  out.write(reinterpret_cast<const char*>(&cols), sizeof(int));
+
+  for (const auto& row : matrix) {
+    out.write(reinterpret_cast<const char*>(row.data()), sizeof(int) * cols);
+  }
+
+  out.close();
+}
 std::vector<std::vector<float>> readBinary(const std::string& filename) {
   std::ifstream in(filename, std::ios::binary);
   if (!in.is_open()) {
@@ -1042,13 +1058,10 @@ float fieldConvert(const std::string& s) {
 int main(int argc, char* argv[]) {
   bool videoflag=false;
   int thermoflag=0;
-  if (argc < 11 ) {
+  if (argc < 12 ) {
     std::cerr << "Error: Not enough arguments.\n" ;
     std::cerr << "Usage : " << argv[0] << "dir_name density field cutoff_in(A) cutoff_out(A) boxX(A) boxY(A) boxZ(A) timestep(ps)  eqtime(ns) \n";
     return 1;
-  } else if (argc>11) {
-    videoflag=static_cast<bool>(std::stoi(argv[11])); // if 1: write video upto first 20000 steps
-    thermoflag=static_cast<int>(std::stoi(argv[12]));// if 1: use partial thermostat dataset, starting with Tdump..
   } else {
     std::cerr << "Error: Too much  arguments.\n" ;
     std::cerr << "Usage : " << argv[0] << "dir_name density field cutoff_in(A) cutoff_out(A) boxX(A) boxY(A) boxZ(A) timestep(ps)  eqtime(ns) \n";
@@ -1074,6 +1087,8 @@ int main(int argc, char* argv[]) {
   float CUTOFFout = std::stof(argv[5]);
   float timestep = std::stof(argv[9]); // ps unit
   float eqtime = std::stof(argv[10]); // ns unit
+  int cutoffflag = std::stoi(argv[11]);
+  std::string cutoffname = argv[11];
   
 
   std::cout << "\nAnalysis Setups\n";
@@ -1124,6 +1139,8 @@ int main(int argc, char* argv[]) {
   //collect all time series of reduced trajectory
   std::vector<std::vector<float>>  cdist(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor distance, A unit
   std::vector<std::vector<float>>  cangl(numsnap, std::vector<float>( numatoms, 0.0) ); // conditioned nearest neighbor angle, from positive z axis, degree unit
+  std::vector<std::vector<int>>  cA(numsnap, std::vector<int>( numatoms, 0.0) ); //  id for A (center)
+  std::vector<std::vector<int>>  cB(numsnap, std::vector<int>( numatoms, 0.0) ); //  id for B (neighbor) > cA[tag] = id
 
   // placeholder for previous frame Atom properties
   std::vector<int> proles(numatoms, -1);
@@ -1207,6 +1224,8 @@ int main(int argc, char* argv[]) {
         auto it = std::find_if(frame.begin(), frame.end(), [tagg](const Atom& a){return a.tag==tagg;});
         cdist[time][tagg] = it->nndist;
         cangl[time][tagg] = it->nnangl;
+        cA[time][tagg] = it->id;
+        cB[time][tagg] = it->nncounter;
       }
 
       for( int tag =0; tag < numatoms; tag++ ) {
@@ -1242,10 +1261,15 @@ int main(int argc, char* argv[]) {
   //float cutone = integratePDF(h, -1, 1);
   //std::cout << "-1 to 1 : " << cutone << std::endl;
 
+
   std::string outputc;
   if (thermoflag==1) { outputc =  "../data/cnnDist/" + dirName + "TD" + rho + "E" + fieldname + ".binary";}
   else if (thermoflag==2) { outputc =  "../data/cnnDist/" + dirName + "TTD" + rho + "E" + fieldname + ".binary";}
   else { outputc = "../data/cnnDist/" + dirName + "D" + rho + "E" + fieldname + ".binary";}
+  
+  if (cutoffflag>0){
+    outputc = "../data/cnnDist/" + dirName + "D" + rho + "C" + cutoffname+ ".binary";
+  }
   std::cout << "Output generated : " << outputc << " Rows: " << cdist.size() << " Cols: " << cdist[0].size() << "\n";
   printBinary(outputc, cdist);
   /*
@@ -1257,8 +1281,27 @@ int main(int argc, char* argv[]) {
   if( thermoflag==1) { outputa = "../data/cnnAngle/" + dirName + "TD" + rho + "E" + fieldname + ".binary"; }
   else if( thermoflag==2) { outputa = "../data/cnnAngle/" + dirName + "TTD" + rho + "E" + fieldname + ".binary"; }
   else { outputa = "../data/cnnAngle/" + dirName + "D" + rho + "E" + fieldname + ".binary"; }
+  if (cutoffflag>0){
+    outputa = "../data/cnnAngle/" + dirName + "D" + rho + "C" + cutoffname+ ".binary";
+  }
   std::cout << "Output generated : " << outputa << " Rows: " << cangl.size() << " Cols: " << cangl[0].size() << "\n";
   printBinary(outputa, cangl);
+
+  std::string outputA;
+  outputA = "../data/cnnId/" + dirName + "D" + rho + "E" + fieldname + ".binary";
+  std::cout << "Output generated : " << outputA << " Rows: " << cA.size() << " Cols: " << cA[0].size() << "\n";
+  if (cutoffflag>0){
+    outputA = "../data/cnnId/" + dirName + "D" + rho + "C" + cutoffname+ ".binary";
+  }
+  printBinaryInt(outputA, cA);
+
+  std::string outputB;
+  outputB = "../data/cnnCid/" + dirName + "D" + rho + "E" + fieldname + ".binary";
+  std::cout << "Output generated : " << outputB << " Rows: " << cB.size() << " Cols: " << cB[0].size() << "\n";
+  if (cutoffflag>0){
+    outputB = "../data/cnnCid/" + dirName + "D" + rho + "C" + cutoffname+ ".binary";
+  }
+  printBinaryInt(outputB, cB);
 
   std::cout << "\n\n";
 

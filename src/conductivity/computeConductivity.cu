@@ -654,7 +654,7 @@ float GreenKubo( std::vector<float>& unwrapped, std::vector<float>& charges, flo
     Jz.push_back(current);
   }
 
-  int maxTime=200; // 100 timesteps = 5ps
+  int maxTime=2000; // 100 timesteps = 5ps
   std::vector<float> interval;
   std::vector<float> ACF;
   for( int intv = 0; intv < maxTime; intv++){
@@ -669,17 +669,18 @@ float GreenKubo( std::vector<float>& unwrapped, std::vector<float>& charges, flo
   //for(int i =0; i< ACF.size(); i++) std::cout << "t " << interval[i] << " ACF " << ACF[i] << "\n";
   
   float kBT = 0.592*4184; // J/mol
-  float sigma =  trapz(interval, ACF) / volume / kBT;
-  sigma = sigma *96485 * 96485 / 60.2;
+  float numpair = numatoms/2;
+  float sigma =  trapz(interval, ACF) / kBT / numpair;
+  sigma = sigma *96485 * 96485 / 10000; // unit conversion e^2 A^2/ps
 
   return sigma;
 }
 
-float EinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, int dt, size_t numsnap, int numatoms, float timestep) {
+Box EinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, int dt, size_t numsnap, int numatoms, float timestep) {
   //dt : number of timestep to be used for velocity estimate
 
   std::vector<int> interval;
-  for(int intv=40; intv < 400; intv++ ) {
+  for(int intv=400; intv < 700; intv+=2 ) {
     interval.push_back(intv);
   }
 
@@ -694,6 +695,64 @@ float EinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charge
         frameG += charges[index] * disp;
       }
       Gsq+= ( frameG*frameG - Gsq) / (time-intv+1);
+    }
+    meansqG.push_back(Gsq);
+  }
+  std::vector<float> time;
+  for(int i=0; i<meansqG.size(); i++) {
+    //std::cout << " x " << interval[i] << " y " << meansqG[i] << "\n";
+    time.push_back( interval[i] * timestep);
+  }
+
+  LinRegResult res = linear_fit(time, meansqG);
+
+  /*
+  std::cout << "\nLinear Regression Summary\n";
+  std::cout << "slope b      = " << res.slope << "\n";
+  std::cout << "intercept a  = " << res.intercept << "\n";
+  std::cout << "R^2          = " << res.r2 << "\n";
+  std::cout << "SSE          = " << res.sse << "\n";
+  std::cout << "n            = " << res.n << "\n";
+  */
+
+  float kBT = 0.592*4184; // J/mol
+  float numpair=numatoms/2;
+  float sigma = res.slope /2/kBT/numpair;
+  sigma = sigma *96485 * 96485 / 10000;
+
+  // computing standard error of the slope
+  float SE = res.slope * std::sqrt( (1-res.r2)/(res.n-2) / res.r2);
+  SE = SE/2/kBT/numpair* 96485 * 96485 / 10000;
+  Box out;
+  out.x = sigma;
+  out.y = SE;
+
+  return out;
+}
+
+Box partialEinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, int dt, size_t numsnap, int numatoms, float timestep, int ensemble) {
+  //dt : number of timestep to be used for velocity estimate
+
+  std::vector<int> interval;
+  for(int intv=400; intv < 700; intv+=2 ) {
+    interval.push_back(intv);
+  }
+  int chunck = numsnap/3;
+
+  std::cout << "\n chunck " << chunck << " ensemble " << ensemble << "\n";
+
+  std::vector<float> meansqG;
+  for( int intv : interval) {
+    float Gsq=0; // time integrated current, 
+    
+    for ( size_t time=ensemble*chunck + intv ; time < (ensemble+1)*chunck - intv; time++ ) {
+      float frameG = 0;
+      for( int atom=0; atom < numatoms; atom++ ) {
+        int index = numatoms*time + atom;
+        float disp = unwrapped[index +intv*numatoms] - unwrapped[index];
+        frameG += charges[index] * disp;
+      }
+      Gsq+= ( frameG*frameG - Gsq) / (time-(intv+ensemble*chunck)+1);
     }
     meansqG.push_back(Gsq);
   }
@@ -715,9 +774,18 @@ float EinsteinHelfand( std::vector<float>& unwrapped, std::vector<float>& charge
   */
 
   float kBT = 0.592*4184; // J/mol
-  float sigma = res.slope /2/volume/kBT;
-  sigma = sigma *96485 * 96485 / 60.2;
-  return sigma;
+  float numpair=numatoms/2;
+  float sigma = res.slope /2/kBT/numpair;
+  sigma = sigma *96485 * 96485 / 10000;
+
+  // computing standard error of the slope
+  float SE = res.slope * std::sqrt( (1-res.r2)/(res.n-2) / res.r2);
+  SE = SE/2/kBT/numpair* 96485 * 96485 / 10000;
+  Box out;
+  out.x = sigma;
+  out.y = SE;
+
+  return out;
 }
 
 float NernstEinstein( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, size_t numsnap, int numatoms, float timestep){
@@ -755,7 +823,6 @@ float NernstEinstein( std::vector<float>& unwrapped, std::vector<float>& charges
   LinRegResult resc = linear_fit(time, meansqDc);
   LinRegResult resa = linear_fit(time, meansqDa);
 
-  /*
   std::cout << "\nLinear Regression Summary\n";
   std::cout << "Cation\n";
   std::cout << "slope b      = " << resc.slope << "\n";
@@ -763,20 +830,22 @@ float NernstEinstein( std::vector<float>& unwrapped, std::vector<float>& charges
   std::cout << "Cation\n";
   std::cout << "slope b      = " << resa.slope << "\n";
   std::cout << "R^2          = " << resa.r2 << "\n";
-  */
 
   float Dc = resc.slope ; // A^2/ps
   float Da = resa.slope ; // A^2/ps
 
-  std::cout << "Diffusion Coefficient: Dc " << Dc * 0.01*1000 << " Da " << Da * 0.01*1000 << "\n";
+  Dc*= 10;// nm^2/ns
+  Da*= 10;// nm^2/ns
 
-  float kBT = 0.592*4184; // J/mol
-  float lambda = 0.5 * (Dc+Da)*10 * (96485.0*96485.0/100000.0) / kBT;
+  std::cout << "Diffusion Coefficient nm^2/ns: Dc " << Dc  << " Da " << Da  << "\n";
+
+  float RT=8.31446*300; // 
+  float lambda = (Dc+Da)* (96485.0*96485.0) / RT /100000 ;
   return lambda;
 
 }
   
-float Response( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, size_t numsnap, int numatoms, float timestep, float fieldStrength) {
+Box Response( std::vector<float>& unwrapped, std::vector<float>& charges, float volume, size_t numsnap, int numatoms, float timestep, float fieldStrength) {
   //dt : number of timestep to be used for velocity estimate
   int dt=1;
   std::vector<float> Jz; Jz.reserve(numsnap);
@@ -791,11 +860,17 @@ float Response( std::vector<float>& unwrapped, std::vector<float>& charges, floa
   }
 
   float meanFlux = mean(Jz);
+  float stdFlux = std::sqrt(variance(Jz))/std::sqrt(Jz.size()); 
 
   float kBT = 0.592*4184; // J/mol
-  meanFlux = meanFlux * 96485 * 96485 /kBT/ (1.0/25.0) / 10000 / fieldStrength / numatoms;
+  float numpair = numatoms/2;
+  meanFlux = meanFlux * 96485 * 96485 /kBT/ (1.0/25.0) / 10000 / fieldStrength / numpair;
+  stdFlux = stdFlux * 96485 * 96485 /kBT/ (1.0/25.0) / 10000 / fieldStrength / numpair;
+  Box out;
+  out.x = meanFlux;
+  out.y = stdFlux;
 
-  return meanFlux;
+  return out;
 }
 
 
@@ -949,32 +1024,74 @@ int main(int argc, char* argv[]) {
     unwrappedZ[element] = wrappedZ[element] + imageZ[element]* box.z;
   }
 
-  Box conductivityGK; // Green-Kubo
-  Box conductivityEH; // Einstein-Helfand
-  Box conductivityNE; // Nernst-Einstein
+  //Box conductivityGK; // Green-Kubo
+  //Box conductivityEH; // Einstein-Helfand
+  //Box conductivityNE; // Nernst-Einstein
+
+  Box condEHx, condEHy, condEHz;
   float volume = box.x * box.y * box.z; // A^3
 
   std::cout << std::fixed << std::setprecision(6);
 
+  float molarConductivity=0;
+  float molarConductivityE=0;
+
   if ( field==0) {
-    conductivityGK.x = GreenKubo(unwrappedX, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
-    conductivityGK.y = GreenKubo(unwrappedY, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
-    conductivityGK.z = GreenKubo(unwrappedZ, charges, volume, /*dt=*/1,  numsnap, numatoms, timestep);
+  //if (1){
+    /*
+    Box conductivityGK;
+    conductivityGK.x = GreenKubo(unwrappedX, charges, volume, 1,  numsnap, numatoms, timestep);
+    conductivityGK.y = GreenKubo(unwrappedY, charges, volume, 1,  numsnap, numatoms, timestep);
+    conductivityGK.z = GreenKubo(unwrappedZ, charges, volume, 1,  numsnap, numatoms, timestep);
     std::cout << "\nGreen-Kubo conductivity\n";
     //std::cout << "conductivity : " << conductivityGK << "S / m\n";
-    std::cout << "molar conductivity x " << conductivityGK.x * 10 / (density*2.0)  << " S cm^2/mol\n";
-    std::cout << "molar conductivity y " << conductivityGK.y * 10 / (density*2.0)  << " S cm^2/mol\n";
-    std::cout << "molar conductivity z " << conductivityGK.z * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity x " << conductivityGK.x   << " S cm^2/mol\n";
+    std::cout << "molar conductivity y " << conductivityGK.y   << " S cm^2/mol\n";
+    std::cout << "molar conductivity z " << conductivityGK.z   << " S cm^2/mol\n";
 
-    conductivityEH.x = EinsteinHelfand(unwrappedX, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
-    conductivityEH.y = EinsteinHelfand(unwrappedY, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
-    conductivityEH.z = EinsteinHelfand(unwrappedZ, charges, volume, /*dt=*/1, numsnap, numatoms, timestep);
+    
+
+    condEHx = EinsteinHelfand(unwrappedX, charges, volume, 1, numsnap, numatoms, timestep);
+    condEHy = EinsteinHelfand(unwrappedY, charges, volume, 1, numsnap, numatoms, timestep);
+    condEHz = EinsteinHelfand(unwrappedZ, charges, volume, 1, numsnap, numatoms, timestep);
     std::cout << "\nEinstein-Helfand conductivity\n";
-    std::cout << "molar conductivity x  " << conductivityEH.x * 10 / (density*2.0)  << " S cm^2/mol\n";
-    std::cout << "molar conductivity y  " << conductivityEH.y * 10 / (density*2.0)  << " S cm^2/mol\n";
-    std::cout << "molar conductivity z  " << conductivityEH.z * 10 / (density*2.0)  << " S cm^2/mol\n";
+    std::cout << "molar conductivity x  " << condEHx.x   << " +- " << condEHx.y << " " << "S cm^2/mol\n";
+    std::cout << "molar conductivity y  " << condEHy.x   << " +- " << condEHy.y << " " << "S cm^2/mol\n";
+    std::cout << "molar conductivity z  " << condEHz.x   << " +- " << condEHz.y << " " << "S cm^2/mol\n";
+
+    //float wx = condEHx.y * condEHx.y;
+    //float wy = condEHy.y * condEHy.y;
+    //float wz = condEHz.y * condEHz.y;
+
+    //molarConductivity = (condEHx.x / wx + condEHy.x / wy + condEHz.x / wz) / (1/wx + 1/wy + 1/wz);
+    //molarConductivityE=std::sqrt( 1/ ( 1/wx + 1/wy + 1/wz));
+    molarConductivity = (condEHx.x + condEHy.x + condEHz.x )/3.0;
+    float sampleSD = std::sqrt( std::pow(condEHx.x-molarConductivity, 2) +  std::pow(condEHy.x-molarConductivity, 2) +  std::pow(condEHz.x-molarConductivity, 2))/std::sqrt(2);
+    molarConductivityE = sampleSD/std::sqrt(3);
+
+    std::cout << "Total mean : " << molarConductivity << " +- " << molarConductivityE << "\n";
+    */
 
 
+    std::vector<float> values;
+    for(int ensemble=0; ensemble<3; ensemble++) {
+      condEHx = partialEinsteinHelfand(unwrappedX, charges, volume, 1, numsnap, numatoms, timestep, ensemble);
+      condEHy = partialEinsteinHelfand(unwrappedY, charges, volume, 1, numsnap, numatoms, timestep, ensemble);
+      condEHz = partialEinsteinHelfand(unwrappedZ, charges, volume, 1, numsnap, numatoms, timestep, ensemble);
+      values.push_back(condEHx.x);
+      values.push_back(condEHy.x);
+      values.push_back(condEHz.x);
+      std::cout << "values " << condEHx.x << " " << condEHy.x << " " << condEHz.x << "\n";
+    }
+
+
+    std::cout << "split3 Total mean : " << mean(values) << " +- " << std::sqrt( variance(values)/ static_cast<float>(values.size()) ) << "\n";
+
+
+
+
+    /*
+    Box conductivityNE;
     conductivityNE.x = NernstEinstein(unwrappedX, charges, volume, numsnap, numatoms, timestep);
     conductivityNE.y = NernstEinstein(unwrappedY, charges, volume, numsnap, numatoms, timestep);
     conductivityNE.z = NernstEinstein(unwrappedZ, charges, volume, numsnap, numatoms, timestep);
@@ -982,15 +1099,23 @@ int main(int argc, char* argv[]) {
     std::cout << "molar conductivity x " << conductivityNE.x   << " S cm^2/mol\n";
     std::cout << "molar conductivity y " << conductivityNE.y   << " S cm^2/mol\n";
     std::cout << "molar conductivity z " << conductivityNE.z   << " S cm^2/mol\n";
+    */
   }
   else {
     Box response; // <J>/E, not differential conductivity
-    response.x = Response(unwrappedX, charges, volume, numsnap, numatoms, timestep, field*fconversion);
-    response.y = Response(unwrappedY, charges, volume, numsnap, numatoms, timestep, field*fconversion);
-    response.z = Response(unwrappedZ, charges, volume, numsnap, numatoms, timestep, field*fconversion);
-    std::cout << "\nResponse x " << response.x   << " S cm^2/mol\n";
-    std::cout << "Response y " << response.y   << " S cm^2/mol\n";
-    std::cout << "Response z " << response.z   << " S cm^2/mol\n";
+    Box std;
+    response.x = Response(unwrappedX, charges, volume, numsnap, numatoms, timestep, field*fconversion).x;
+    response.y = Response(unwrappedY, charges, volume, numsnap, numatoms, timestep, field*fconversion).x;
+    response.z = Response(unwrappedZ, charges, volume, numsnap, numatoms, timestep, field*fconversion).x;
+    std.x = Response(unwrappedX, charges, volume, numsnap, numatoms, timestep, field*fconversion).y;
+    std.y = Response(unwrappedY, charges, volume, numsnap, numatoms, timestep, field*fconversion).y;
+    std.z = Response(unwrappedZ, charges, volume, numsnap, numatoms, timestep, field*fconversion).y;
+    std::cout << "\nResponse x " << response.x   << " +- " << std.x << "  S cm^2/mol\n";
+    std::cout << "Response y " << response.y   <<   " +- " << std.y << " S cm^2/mol\n";
+    std::cout << "Response z " << response.z   <<   " +- " << std.z << " S cm^2/mol\n";
+
+    molarConductivity = response.z;
+    molarConductivityE = std.z;
   }
 
 
@@ -1021,5 +1146,14 @@ int main(int argc, char* argv[]) {
 
   std::cout << "\n\n";
 
+  // generate output result
+  std::string rateFile;
+  rateFile=std::string("../results/conductivity/") + dirName + "D" + rho + "E" + fieldname + ".dat";
+  std::ofstream out(rateFile );
+  out << std::fixed << std::setprecision(8) << density << "\t\t" << field << "\t\t"  
+    << CUTOFFin << "\t\t" << CUTOFFout <<"\t\t"  
+    << molarConductivity << "\t\t" << molarConductivityE 
+    << "\n";
+  out.close();
   return 0;
 }

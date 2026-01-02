@@ -8,33 +8,9 @@
 #include <iomanip>
 #include <map>
 
-void writeHistogram(std::string& file, std::vector<float>& arg, std::vector<int>& hist){
-  std::cout << "Histogram File generated: " << file << std::endl;
-  std::cout << "Size: " << arg.size() <<  std::endl;
-  std::cout << "Arg | log10(g(r)) | log10(r^2 g(r)) " << std::endl;
+#include <stats/stats.hpp>
+using namespace stats;
 
-  std::ofstream out ( file);
-  float sum1=0;
-  float sum2=0;
-  float r=0;
-  float dr=0;
-  for (size_t i = 0; i< arg.size(); i++) {
-    r = arg[i]; // assume uniform bin
-    dr = arg[1]-arg[0];
-    sum1 += static_cast<float>(hist[i]) * dr / r / r;
-    sum2 += static_cast<float>(hist[i]) * dr ;
-  }
-
-  float val1, val2;
-  for (size_t i = 0; i< arg.size(); i++) {
-    r = arg[i] + (arg[1] - arg[0])/2.0 ; // assume uniform bin
-    val1 = static_cast<float>(hist[i])/sum1/r/r;
-    val2 = static_cast<float>(hist[i])/sum2;
-    //out << std::fixed << std::setprecision(5) << arg[i] << "\t" << log10(val1)  << "\t" << log10(val2) << std::endl;
-    out << std::fixed << std::setprecision(5) << arg[i] << "\t\t" << -std::log(val1)  << "\t\t" << -std::log(val2) << std::endl;
-  }
-  out.close();
-}
 
 __global__ void computeHistogramKernel(float* data, int* histogram, int numBins, float minVal, float maxVal, int dataSize) {
   int idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -73,153 +49,105 @@ void computeHistogramCUDA(const std::vector<float>& data, int numBins, float min
 }
 
 
-std::vector<std::vector<float>> readBTrajFromFile(const std::string& filename) {
+std::vector<std::vector<double>> readBTrajFromFile(const std::string& filename) {
   std::ifstream in(filename, std::ios::binary);
-  int rows, cols;
-  in.read(reinterpret_cast<char*>(&rows), sizeof(int));
-  in.read(reinterpret_cast<char*>(&cols), sizeof(int));
+  int32_t rows32=0, cols32=0;
+  in.read(reinterpret_cast<char*>(&rows32), sizeof(rows32));
+  in.read(reinterpret_cast<char*>(&cols32), sizeof(cols32));
 
-  std::vector<std::vector<float>> matrix(rows, std::vector<float>(cols));
-  for( int i=0; i<rows; i++){
-    in.read(reinterpret_cast<char*>(matrix[i].data()), sizeof(float)*cols);
+  size_t rows = static_cast<size_t>(rows32);
+  size_t cols = static_cast<size_t>(cols32);
+
+  std::vector<std::vector<double>> out(rows, std::vector<double>(cols));
+  std::vector<float> rowf(cols);
+  for( size_t i=0; i<rows; i++){
+    in.read(reinterpret_cast<char*>(rowf.data()), static_cast<std::streamsize>( sizeof(float)*cols));
+    for (size_t j=0; j<cols; j++) {
+      out[i][j] = static_cast<double>(rowf[j]);
+    }
    }
   in.close();
   std::cout << "file reading done" << std::endl;
-  return matrix;
-}
-
-std::vector<float> linspace(float start, float stop, int num, bool endpoint = true) {
-  std::vector<float> result;
-  if (num <= 0) {
-    return result;
-  }
-
-  float step = (stop-start) / (endpoint ? num-1 : num);
-
-  for (int i=0; i< num ; i++){
-    float exponent = start + i *step;
-    result.push_back(exponent);
-  }
-  return result;
+  return out;
 }
 
 
 
-void generateArgumentVector(std::vector<float>& argVector, int numBins, float minVal, float maxVal) {
-  float binWidth = (maxVal - minVal) / numBins;
-  for (int i = 0; i<numBins; i++){
-    argVector.push_back(minVal + binWidth * ( i + 0.5f));
+
+
+
+
+float fieldConvert(const std::string& s) {
+  if (s.find_first_not_of('0') == std::string::npos) {
+    return 0.0f;
   }
-}
+  size_t leadingZeros = s.find_first_not_of('0');
 
-
-void printFileInt(std::string& file, std::vector<int>& x, std::vector<int>& y){
-  std::cout << "Outpul File generated: " << file << std::endl;
-  std::cout << "Size: " << x.size() <<  std::endl;
-
-  std::ofstream out ( file);
-  for (size_t i = 0; i< x.size(); i++) {
-    out << std::fixed << std::setprecision(7) << x[i] << " " << y[i]  << std::endl;
+  if ( leadingZeros >= 2) {
+    std::string digits = s.substr(leadingZeros);
+    float value = std::stof(digits);
+    return value / std::pow(10, leadingZeros -1);
   }
-  out.close();
-}
-void printFile(std::string& file, std::vector<float>& x, std::vector<float>& y){
-  std::cout << "Outpul File generated: " << file << std::endl;
-  std::cout << "Size: " << x.size() <<  std::endl;
-
-  std::ofstream out ( file);
-  for (size_t i = 0; i< x.size(); i++) {
-    out << std::fixed << std::setprecision(12) << x[i] << " " << y[i]  << std::endl;
-  }
-  out.close();
-}
-
-
-void readTrajFromFile(std::string& file,
-                      std::vector<std::vector<float>>& traj) {
-  std::ifstream in(file);
-
-  if (!in.is_open()) {
-    std::cerr << "Error: Cannot find file" << std::endl;
-  }
-
-  std::string line;
-  while (std::getline(in, line)) {
-    std::istringstream lineStream(line);
-    std::vector<float> row;
-
-    float value;
-
-    while (lineStream >> value) {
-      row.push_back(value);
-    }
-    
-    if (!row.empty()){
-      traj.push_back(row);
-    }
-  }
-  in.close();
-  std::cout << "Read File from " << file << " is done" << std::endl;
-  std::cout << "Rows : " << traj.size() << " Cols : " << traj[0].size() << std::endl;
-}
-
-std::vector<float> logspace(float start, float stop, int num, bool endpoint = true) {
-  std::vector<float> result;
-  if (num <= 0) {
-    return result;
-  }
-
-  float step = (stop-start) / (endpoint ? num-1 : num);
-
-  for (int i=0; i< num ; i++){
-    float exponent = start + i *step;
-    result.push_back(pow(10, exponent));
-  }
-  return result;
-}
-
-template <typename T>
-std::vector<T> removeDuplicates(const std::vector<T>& input) {
-  std::set<T> uniqueSet(input.begin(), input.end());
-  return std::vector<T>(uniqueSet.begin(), uniqueSet.end());
+  return std::stof(s);
 }
 
 int main(int argc, char* argv[]) {
-
-  std::string density=argv[1];
-  std::string field=argv[2];
-
-  std::vector<std::vector<float>> dist;
-  std::string distFile = "../data/cnnDist/distD" + density + "E" + field + ".binary"; ; 
-  dist=readBTrajFromFile(distFile);
-
-  std::vector<float> fdist;
-  for (size_t i =0; i<dist.size(); i++) {
-    fdist.insert(fdist.end(), dist[i].begin(), dist[i].end());
+  if (argc != 8 ) {
+    std::cerr << "Error: Not enough arguments.\n" ;
+    std::cerr << "Usage : " << argv[0] << " dir_name density field cutoff_in(A) cutoff_out(A) timestep(ps) thermoflag\n";
+    return 1;
   }
-  dist.clear();
-  dist.shrink_to_fit();
+  std::string dirName=argv[1]; // name of directory to output results, in results directory
+  std::string rho = argv[2]; 
+  int n = rho.size();
+  long long val = std::stoll(rho);
+  float density = static_cast<float>(val) / std::pow(10.0, n-1);
+  std::string fieldname = argv[3];
+  double field = fieldConvert(fieldname)* 0.023; //kcal /molA,
+  double fconversion = 25.7/0.592 ; // kcal/molA to mV/A
+  double CUTOFFin = std::stof(argv[4]);
+  double CUTOFFout = std::stof(argv[5]);
+  double timestep = std::stof(argv[6]); // ps unit
+  int thermoflag=static_cast<int>(std::stoi(argv[7]));// if 1: use partial thermostat dataset, starting with Tdump..
 
 
-  // tranform distance data into indicator data
-  size_t numSample = fdist.size();
-  size_t numSteps = numSample ;
+  // get dist data, flatten it to feed it to paralle job
+  std::string distFile;
+  if (thermoflag==1){ distFile = std::string("../data/cnnDist/") + dirName + "TD" + rho + "E" + fieldname + ".binary";}
+  else if (thermoflag==2){ distFile = std::string("../data/cnnDist/") + dirName + "TTD" + rho + "E" + fieldname + ".binary";}
+  else { distFile = std::string("../data/cnnDist/") + dirName + "D" + rho + "E" + fieldname + ".binary";}
+  auto dist=readBTrajFromFile(distFile);
+  size_t numsnap = dist.size();
+  size_t numatoms = dist[0].size();
 
-  std::cout << "Traj: " <<  " Sample: " << numSample << " Times: " << numSteps << std::endl;
+  std::cout << "\nAnalysis Setups\n";
+  std::cout << "data location: " << distFile << std::endl ; 
+  if(thermoflag == 1) { std::cout << "This trajectory was generated from partial Thermostat \n";}
+  else if(thermoflag == 2) { std::cout << "This trajectory was generated from solvent Thermostat \n";}
+  std::cout << "numIons: " << numatoms << " numPairs: " << numatoms/2 << "\n";
+  std::cout << "density of ions : " << density << "M \n";
+  std::cout << "fieldStrength: " << field << " kcal/molA = " << field * fconversion << " mV/A" << "\n"; 
+  std::cout << "domainCutoffs: in " << CUTOFFin << " A\t\tout "<< CUTOFFout << " A\n";
+  std::cout << "timeStep: " << timestep << " ps\n";
+  std::cout << "\n\n";
 
+
+  std::cout << "Radial Distribution Function computation Starts...\n";
+  std::cout << "Read Trajectory of length " << numsnap*timestep/1000 << "ns\n\n";
+
+  //flatten 2d double std vector into 1d vector
+  std::vector<double> fdist;
+  for (auto& row : dist) {
+    fdist.insert(fdist.end(), row.begin(), row.end());
+  }
 
   /// compute radial histograms
-  int numBins=1000;
-  float minVal = *std::min_element(fdist.begin(), fdist.end());
-  float maxVal = *std::max_element(fdist.begin(), fdist.end());
-  std::vector<int> histogram;
-  std::vector<float> argVec;
-  
-  computeHistogramCUDA(fdist, numBins, minVal, maxVal, histogram);
-  generateArgumentVector(argVec, numBins, minVal, maxVal);
+  size_t numBins=1000;
+  auto rdf = makeHistogramAuto(fdist, numBins);
 
-  std::string rhist = "../results/hist/rdfD" + density + "E" +  field + ".dat";
-  writeHistogram(rhist, argVec, histogram);
+  std::string outfile = std::string("../results/rdf/") + dirName + "D" + rho + "E" +  fieldname + ".dat";
+  std::ofstream out(outfile);
+  writeHistogram(rdf, out);
 
   return 0;
 }

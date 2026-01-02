@@ -346,14 +346,19 @@ int safeDivision(int a, int b) {
 ///////////End statistics
 
 int main(int argc, char* argv[]) {
-  if (argc != 5 ) {
+  if (argc != 8  ) {
     std::cerr << "Error: Not enough arguments.\n" ;
-    std::cerr << "Usage : " << argv[0] << "dir_name density field eqtime(ns) \n";
+    std::cerr << "Usage : " << argv[0] << "dir_name density field eqtime(ns) natomsInSolvent natomsInCation natomsInAnion \n";
     return 1;
   } 
 
   std::string dirName=argv[1]; // name of directory to output results, in results directory
   std::string rho = argv[2]; 
+  int oneSolvent = std::stoi(argv[5]); 
+  int oneCation = std::stoi(argv[6]); 
+  int oneAnion = std::stoi(argv[7]); 
+  std::cout << oneSolvent << " " << oneCation << " " << oneAnion << "\n";
+
   int n = rho.size();
   long long val = std::stoll(rho);
   float density = static_cast<float>(val) / std::pow(10.0, n-1);
@@ -415,14 +420,17 @@ int main(int argc, char* argv[]) {
   // frames : std::vector<Frame>
   // Frame : std::vector<Atom> atoms (x, y, z), Box box
 
+  /*
   int oneSolvent = 6; // number of atoms in one solvent molecule, Acetonitrile = 6
   int oneCation = 1; // number of atoms in one cation, Li=1
   int oneAnion = 7; // number of atoms in one anion, PF6=7
+  */
+
   int numsolvents = safeDivision(numatoms - numpion*oneCation - numpion * oneAnion,oneSolvent);
   std::cout << "One solvent contains " << oneSolvent << " atoms, and total number of moleucles : " << numsolvents << "\n";
 
-  std::ofstream out;
-  out.open("video.lammpstrj");
+  //std::ofstream out;
+  //out.open("video.lammpstrj");
   std::vector<float> Msq; Msq.reserve(numsnap);
   std::vector<float> Mx, My, Mz;
   std::vector<float> Mxsq, Mysq, Mzsq;
@@ -513,13 +521,31 @@ int main(int argc, char* argv[]) {
   //finite field measurement
   float fieldStrength = field*fconversion /1000; // V/A
   float polarization = total.z/volume;
-  std::cout << " fs " << fieldStrength << " pl " << polarization << "\n";
-  float secant = polarization / epsilon0/fieldStrength;
-  std::cout << "Secant term " << secant << "\n";
+  float polarizationE = totalError.z/volume;
+  std::cout << " fs " << fieldStrength << " pl " << polarization <<  " err " << polarizationE <<"\n";
+  float secant, secantE;
+  if(fieldStrength != 0) {
+    secant= polarization / epsilon0/fieldStrength;
+    secantE= polarizationE / epsilon0/fieldStrength;
+  } else{
+    secant=0;
+    secantE=0;
+  }
+  std::cout << "Secant term " << secant << " err " << secantE <<  "\n";
+
+  std::string polFile;
+  polFile=std::string("../results/dielectric/") + dirName + "D" + rho + "E" + fieldname + ".dat";
+  std::ofstream out(polFile );
+  out << std::fixed << std::setprecision(12) << density << "\t\t" << field << "\t\t"  
+    << dielectric.z << "\t\t" << dielectricE.z << "\t\t"  
+    << secant << "\t\t" << secantE 
+    << "\n";
+  out.close();
+
   
 
 
-  out.close();
+  //out.close();
   
 
   return 0;

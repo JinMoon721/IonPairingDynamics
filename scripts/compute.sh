@@ -6,116 +6,77 @@ declare -A LiIinH2O=(
   [cutoffout]="6.0" ## outer cutoff for domain, A
   [boxX]="29.84" ## box size A
   [boxY]="29.84" ## box size A
-  [boxZ]="59.68" ## box size A
+  [boxZ]="29.84" ## box size A
   [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
+  [eqtime]="5" ## equilibration time, ns
   [videoflag]="0"
   [thermoflag]="0"
+  [natoms]="3 1 1" ## number of atoms in solvent, cation, anion
 )
 declare -A LiPF6inACN=(
-  [cutoffin]="4.3" ## inner cutoff for domain, A
-  [cutoffout]="8.0" ## outer cutoff for domain, A
+  [cutoffin]="5.3" ## inner cutoff for domain, A
+  [cutoffout]="7.2" ## outer cutoff for domain, A
   [boxX]="36.00" ## box size A
   [boxY]="36.00" ## box size A
   [boxZ]="36.00" ## box size A
   [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
+  [eqtime]="5" ## equilibration time, ns
   [videoflag]="0"
   [thermoflag]="0"
+  [natoms]="6 1 7"
 )
-declare -A NaIinACN=(
-  [cutoffin]="4.0" ## inner cutoff for domain, A
-  [cutoffout]="8.0" ## outer cutoff for domain, A
+
+declare -A KPF6inACN=(
+  [cutoffin]="5.3" ## inner cutoff for domain, A
+  [cutoffout]="7.2" ## outer cutoff for domain, A
   [boxX]="36.00" ## box size A
   [boxY]="36.00" ## box size A
   [boxZ]="36.00" ## box size A
   [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
+  [eqtime]="5" ## equilibration time, ns
   [videoflag]="0"
   [thermoflag]="0"
+  [natoms]="6 1 7"
 )
-declare -A LiBF4inACN=(
-  [cutoffin]="4." ## inner cutoff for domain, A
-  [cutoffout]="8.0" ## outer cutoff for domain, A
-  [boxX]="36.00" ## box size A
-  [boxY]="36.00" ## box size A
-  [boxZ]="36.00" ## box size A
+declare -A LiPF6inH2O=(
+  [cutoffin]="5.3" ## inner cutoff for domain, A
+  [cutoffout]="7.2" ## outer cutoff for domain, A
+  [boxX]="28.57" ## box size A
+  [boxY]="28.57" ## box size A
+  [boxZ]="28.57" ## box size A
   [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
+  [eqtime]="5" ## equilibration time, ns
   [videoflag]="0"
   [thermoflag]="0"
+  [natoms]="3 1 7"
 )
-declare -A LiIinACN=(
-  [cutoffin]="3.1" ## inner cutoff for domain, A
-  [cutoffout]="6.0" ## outer cutoff for domain, A
-  [boxX]="36.00" ## box size A
-  [boxY]="36.00" ## box size A
-  [boxZ]="36.00" ## box size A
-  [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
-  [videoflag]="0"
-  [thermoflag]="0"
-)
-declare -A LiPF6inACNionField=(
-  [density]="05" ## ion density, /10 M
-  [cutoffin]="4.3" ## inner cutoff for domain, A
-  [cutoffout]="8.0" ## outer cutoff for domain, A
-  [boxX]="36.00" ## box size A
-  [boxY]="36.00" ## box size A
-  [boxZ]="36.00" ## box size A
-  [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
-  [videoflag]="0"
-  [thermoflag]="0"
-)
-declare -A LiPF6inACNacnField=(
-  [cutoffin]="4.3" ## inner cutoff for domain, A
-  [cutoffout]="8.0" ## outer cutoff for domain, A
-  [boxX]="36.00" ## box size A
-  [boxY]="36.00" ## box size A
-  [boxZ]="36.00" ## box size A
-  [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
-  [videoflag]="0"
-  [thermoflag]="0"
-)
-declare -A LiIinH2OionField=(
-  [density]="10" ## ion density, /10 M
-  [cutoffin]="3.1" ## inner cutoff for domain, A
-  [cutoffout]="6.0" ## outer cutoff for domain, A
-  [boxX]="29.84" ## box size A
-  [boxY]="29.84" ## box size A
-  [boxZ]="59.68" ## box size A
-  [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
-  [videoflag]="0"
-  [thermoflag]="0"
-)
-declare -A LiIinH2Oh2oField=(
-  [cutoffin]="3.1" ## inner cutoff for domain, A
-  [cutoffout]="6.0" ## outer cutoff for domain, A
-  [boxX]="29.84" ## box size A
-  [boxY]="29.84" ## box size A
-  [boxZ]="59.68" ## box size A
-  [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
-  [videoflag]="0"
-  [thermoflag]="0"
-)
-declare -A LiTFSIinACN=(
+
+declare -A ImpX20=(
   [cutoffin]="3.5" ## inner cutoff for domain, A
-  [cutoffout]="6.6" ## outer cutoff for domain, A
+  [cutoffout]="8.5" ## outer cutoff for domain, A
   [boxX]="36.00" ## box size A
   [boxY]="36.00" ## box size A
   [boxZ]="36.00" ## box size A
   [timestep]="0.05" ## time step of snapshots, ps
-  [eqtime]="2.8652" ## equilibration time, ns
+  [eqtime]="5.00" ## equilibration time, ns
   [videoflag]="0"
   [thermoflag]="0"
+  [natoms]="6 1 7"
+)
+declare -A ImpD010=(
+  [cutoffin]="3.0" ## inner cutoff for domain, A
+  [cutoffout]="5.5" ## outer cutoff for domain, A
+  [boxX]="36.00" ## box size A
+  [boxY]="36.00" ## box size A
+  [boxZ]="36.00" ## box size A
+  [timestep]="0.05" ## time step of snapshots, ps
+  [eqtime]="5.00" ## equilibration time, ns
+  [videoflag]="0"
+  [thermoflag]="0"
+  [natoms]="6 1 7"
 )
 
-
-measures=(processTraj rate dielectric conductivity)
+measures=(processTraj rate dielectric conductivity rdf mtpt distribution mechanism singleboundary)
 echo "Choose a measurement : "
 select measure in "${measures[@]}"; do
   [[ -n "${measure:-}" ]] && break
@@ -123,7 +84,7 @@ select measure in "${measures[@]}"; do
 done
 
 
-targets=(LiIinH2O LiPF6inACN NaIinACN LiBF4inACN LiIinACN LiPF6inACNionField LiPF6inACNacnField LiIinH2OionField LiIinH2Oh2oField LiTFSIinACN)
+targets=(LiIinH2O LiPF6inACN LiPF6inH2O ImpD010 ImpX20 KPF6inACN)
 
 load_params() {
   local tgt=$1
@@ -194,6 +155,53 @@ if [[ $measure == "processTraj" ]]; then
 
   #mkdir -p ../results/conductivity
   ../bin/processTraj $target $density $field $cutoffin $cutoffout $boxX $boxY $boxZ $timestep $eqtime $videoflag $thermoflag 
+elif [[ $measure == "singleboundary" ]]; then
+  dumpdir="../data/cnnDist/"
+  pattern="$target"
+
+  ## find all trajectories
+  shopt -s nullglob
+  dynamic=()
+  for f in "$dumpdir"/*"$pattern"*; do
+    [[ -f $f ]] && dynamic+=( "$(basename -- "$f")")
+  done
+  shopt -u nullglob
+
+  dumps=()
+  dumps+=("${dynamic[@]}")
+
+  if ((${#dumps[@]} == 0)); then
+    echo "CNN trajectories are not available (pattern='${pattern}' in dir='${dumpdir}')."
+    exit 1
+  fi
+
+  echo "Choose a data file :"
+  select dump in "${dumps[@]}"; do
+    [[ -n "${dump:-}" ]] && break
+    echo "Invalid choice. Try again."
+  done
+
+  echo "Analysis will be done on trajectory file : $dump"
+
+  ## get density and field
+  [[ $dump =~ D([0-9]+)E([0-9]+) ]] && density="${BASH_REMATCH[1]}" field="${BASH_REMATCH[2]}"
+
+  if [[ $dump == *TD* ]]; then
+    thermoflag=1
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  if [[ $dump == *TTD* ]]; then
+    thermoflag=2
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  mkdir -p ../results/singleboundary
+  ../bin/singleboundary $target $density $field $cutoffin $cutoffout $timestep $thermoflag
 elif [[ $measure == "rate" ]]; then
   dumpdir="../data/cnnDist/"
   pattern="$target"
@@ -287,7 +295,7 @@ elif [[ $measure == "dielectric" ]]; then
   fi
 
   mkdir -p ../results/dielectric
-  ../bin/dielectric $target $density $field $eqtime
+  ../bin/dielectric $target $density $field $eqtime $natoms
 elif [[ $measure == "conductivity" ]]; then
   dumpdir="../data/dumps$target/"
   pattern="dumpD"
@@ -335,4 +343,178 @@ elif [[ $measure == "conductivity" ]]; then
 
   mkdir -p ../results/conductivity
   ../bin/conductivity $target $density $field $cutoffin $cutoffout $boxX $boxY $boxZ $timestep $eqtime $thermoflag 
+elif [[ $measure == "rdf" ]]; then
+  dumpdir="../data/cnnDist/"
+  pattern="$target"
+
+  ## find all trajectories
+  shopt -s nullglob
+  dynamic=()
+  for f in "$dumpdir"/*"$pattern"*; do
+    [[ -f $f ]] && dynamic+=( "$(basename -- "$f")")
+  done
+  shopt -u nullglob
+
+  dumps=()
+  dumps+=("${dynamic[@]}")
+
+  if ((${#dumps[@]} == 0)); then
+    echo "CNN trajectories are not available (pattern='${pattern}' in dir='${dumpdir}')."
+    exit 1
+  fi
+
+  echo "Choose a data file :"
+  select dump in "${dumps[@]}"; do
+    [[ -n "${dump:-}" ]] && break
+    echo "Invalid choice. Try again."
+  done
+
+  echo "Analysis will be done on trajectory file : $dump"
+
+  ## get density and field
+  [[ $dump =~ D([0-9]+)E([0-9]+) ]] && density="${BASH_REMATCH[1]}" field="${BASH_REMATCH[2]}"
+
+  if [[ $dump == *TD* ]]; then
+    thermoflag=1
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  if [[ $dump == *TTD* ]]; then
+    thermoflag=2
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  mkdir -p ../results/rdf
+  echo $target $density $field
+  ../bin/rdf $target $density $field $cutoffin $cutoffout $timestep $thermoflag
+elif [[ $measure == "mtpt" ]]; then
+  dumpdir="../data/cnnDist/"
+  pattern="$target"
+
+  ## find all trajectories
+  shopt -s nullglob
+  dynamic=()
+  for f in "$dumpdir"/*"$pattern"*; do
+    [[ -f $f ]] && dynamic+=( "$(basename -- "$f")")
+  done
+  shopt -u nullglob
+
+  dumps=()
+  dumps+=("${dynamic[@]}")
+
+  if ((${#dumps[@]} == 0)); then
+    echo "CNN trajectories are not available (pattern='${pattern}' in dir='${dumpdir}')."
+    exit 1
+  fi
+
+  echo "Choose a data file :"
+  select dump in "${dumps[@]}"; do
+    [[ -n "${dump:-}" ]] && break
+    echo "Invalid choice. Try again."
+  done
+
+  echo "Analysis will be done on trajectory file : $dump"
+
+  ## get density and field
+  [[ $dump =~ D([0-9]+)E([0-9]+) ]] && density="${BASH_REMATCH[1]}" field="${BASH_REMATCH[2]}"
+
+  if [[ $dump == *TD* ]]; then
+    thermoflag=1
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  if [[ $dump == *TTD* ]]; then
+    thermoflag=2
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  mkdir -p ../results/mtpt
+  ../bin/mtpt $target $density $field $cutoffin $cutoffout $timestep $thermoflag
+elif [[ $measure == "distribution" ]]; then
+  dumpdir="../data/cnnDist/"
+  pattern="$target"
+
+  ## find all trajectories
+  shopt -s nullglob
+  dynamic=()
+  for f in "$dumpdir"/*"$pattern"*; do
+    [[ -f $f ]] && dynamic+=( "$(basename -- "$f")")
+  done
+  shopt -u nullglob
+
+  dumps=()
+  dumps+=("${dynamic[@]}")
+
+  if ((${#dumps[@]} == 0)); then
+    echo "CNN trajectories are not available (pattern='${pattern}' in dir='${dumpdir}')."
+    exit 1
+  fi
+
+  echo "Choose a data file :"
+  select dump in "${dumps[@]}"; do
+    [[ -n "${dump:-}" ]] && break
+    echo "Invalid choice. Try again."
+  done
+
+  echo "Analysis will be done on trajectory file : $dump"
+
+  ## get density and field
+  [[ $dump =~ D([0-9]+)E([0-9]+) ]] && density="${BASH_REMATCH[1]}" field="${BASH_REMATCH[2]}"
+
+  if [[ $dump == *TD* ]]; then
+    thermoflag=1
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  if [[ $dump == *TTD* ]]; then
+    thermoflag=2
+    if [[ $target == *LiIinH2O* ]]; then
+      boxZ="29.84"
+    fi
+  fi
+
+  mkdir -p ../results/distribution
+  ../bin/distribution $target $density $field $cutoffin $cutoffout $timestep $thermoflag
+elif [[ $measure == "mechanism" ]]; then
+  dumpdir="../data/dumps$target/"
+  pattern="dumpD"
+
+  ## find all trajectories
+  shopt -s nullglob
+  dynamic=()
+  for f in "$dumpdir"/*"$pattern"*; do
+    [[ -f $f ]] && dynamic+=( "$(basename -- "$f")")
+  done
+  shopt -u nullglob
+
+  dumps=()
+  dumps+=("${dynamic[@]}")
+
+  if ((${#dumps[@]} == 0)); then
+    echo "Dump trajectories are not available (pattern='${pattern}' in dir='${dumpdir}')."
+    exit 1
+  fi
+
+  echo "Choose a dump file :"
+  select dump in "${dumps[@]}"; do
+    [[ -n "${dump:-}" ]] && break
+    echo "Invalid choice. Try again."
+  done
+
+  echo "Analysis will be done on trajectory file : $dump"
+
+  ## get density and field
+  [[ $dump =~ D([0-9]+)E([0-9]+) ]] && density="${BASH_REMATCH[1]}" field="${BASH_REMATCH[2]}"
+  mkdir -p ../results/mechanism
+  ../bin/mechanism $target $density $field $cutoffin $cutoffout $boxX $boxY $boxZ $timestep $eqtime  
 fi

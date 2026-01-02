@@ -266,23 +266,19 @@ Committors findCommittorsBA(std::vector<std::vector<TPTinfo>>& innerBoundary, st
   std::vector<double> meanqb; meanqb.reserve( numatoms);
   std::vector<double> baseqb; baseqb.reserve( numatoms);
   
-  /*
   std::vector<double> meanpA; meanpA.reserve( numatoms);
   std::vector<double> basepA; basepA.reserve( numatoms);
   std::vector<double> meanpAB; meanpAB.reserve( numatoms);
   std::vector<double> basepAB; basepAB.reserve( numatoms);
   std::vector<double> meanpB; meanpB.reserve( numatoms);
   std::vector<double> basepB; basepB.reserve( numatoms);
-  */
 
   for( size_t atom =0; atom < numatoms; atom++) {
     std::vector<double> countqf; countqf.reserve( numsnap);
     std::vector<double> countqb; countqb.reserve( numsnap);
-    /*
     std::vector<double> countpA; countpA.reserve( numsnap);
     std::vector<double> countpB; countpB.reserve( numsnap);
     std::vector<double> countpAB; countpAB.reserve( numsnap);
-    */
 
     for ( size_t time=0; time < numsnap; time++) {
       const bool domainA = outerBoundary[atom][time].loc == 1;
@@ -302,27 +298,23 @@ Committors findCommittorsBA(std::vector<std::vector<TPTinfo>>& innerBoundary, st
         if (cameFromA) countqb.push_back(1);
         else countqb.push_back(0);
       }
-      /*
       if(domainA) countpA.push_back(1);
       else countpA.push_back(0);
       if(domainB) countpB.push_back(1);
       else countpB.push_back(0);
       if(domainAB) countpAB.push_back(1);
       else countpAB.push_back(0);
-      */
     }
     meanqf.push_back( mean(countqf));
     baseqf.push_back(blockAverage(countqf, numblock));
     meanqb.push_back( mean(countqb));
     baseqb.push_back(blockAverage(countqb, numblock));
-    /*
     meanpA.push_back( mean(countpA));
-    basepA.push_back(blockAverage(countpA, numBlock));
+    basepA.push_back(blockAverage(countpA, numblock));
     meanpB.push_back( mean(countpB));
-    basepB.push_back(blockAverage(countpB, numBlock));
+    basepB.push_back(blockAverage(countpB, numblock));
     meanpAB.push_back( mean(countpAB));
-    basepAB.push_back(blockAverage(countpAB, numBlock));
-    */
+    basepAB.push_back(blockAverage(countpAB, numblock));
   }
 
   size_t idx=0;
@@ -334,7 +326,7 @@ Committors findCommittorsBA(std::vector<std::vector<TPTinfo>>& innerBoundary, st
   meanqb.erase(std::remove_if(meanqb.begin(), meanqb.end(), [](double x) {return std::isnan(x);} ), meanqb.end());
 
 
-  Stats qf, qb;
+  Stats qf, qb, pA, pAB, pB;
   /*
   if( std::none_of(meanqf.begin(), meanqf.end(), [](double x) { return x==0 || x==1;} ) ){
     qf = weightedMean(meanqf, baseqf);
@@ -349,25 +341,21 @@ Committors findCommittorsBA(std::vector<std::vector<TPTinfo>>& innerBoundary, st
   */
   qf = unweightedMean(meanqf);
   qb = unweightedMean(meanqb);
-  /*
-  auto pA = weightedMean(meanpA, basepA);
-  auto pB = weightedMean(meanpB, basepB);
-  auto pAB = weightedMean(meanpAB, basepAB);
-  */
+  pA = unweightedMean(meanpA);
+  pB = unweightedMean(meanpB);
+  pAB = unweightedMean(meanpAB);
 
   Committors out;
   out.qf = qf.mean;
   out.Eqf = qf.error;
   out.qb = qb.mean;
   out.Eqb = qb.error;
-  /*
   out.pA = pA.mean;
   out.EpA = pA.error;
   out.pB = pB.mean;
   out.EpB = pB.error;
   out.pAB = pAB.mean;
   out.EpAB = pAB.error;
-  */
 
   return out;
 }
@@ -566,10 +554,21 @@ double divisionError(double x, double ex, double y, double ey ) { // return erro
 }
 
 
+std::string removeDot(std::string s, int decimals){
+  auto pos= s.find('.');
+  std::string a = (pos == std::string::npos) ? s : s.substr(0, pos);
+  std::string b = (pos == std::string::npos) ? "" : s.substr(pos+1);
+  if ((int)b.size() < decimals) b.append(decimals-b.size(), '0');
+  if ((int)b.size() > decimals) b.resize(decimals);
+
+  std::string out = a+b;
+  return out;
+}
+
 
 
 int main(int argc, char* argv[]) {
-  if (argc != 8 ) {
+  if (argc != 8) {
     std::cerr << "Error: Not enough arguments.\n" ;
     std::cerr << "Usage : " << argv[0] << " dir_name density field cutoff_in(A) cutoff_out(A) timestep(ps) thermoflag\n";
     return 1;
@@ -586,23 +585,28 @@ int main(int argc, char* argv[]) {
   double CUTOFFin = std::stof(argv[4]);
   double CUTOFFout = std::stof(argv[5]);
   double timestep = std::stof(argv[6]); // ps unit
-  int thermoflag=static_cast<int>(std::stoi(argv[7]));// if 1: use partial thermostat dataset, starting with Tdump..
+  int cutoffflag=static_cast<int>(std::stoi(argv[7]));// if 1: use partial thermostat dataset, starting with Tdump..
+  std::string cutoffname = argv[7];
+  int thermoflag=0;
+
+  std::string inName = removeDot(argv[4], 1);
+  std::string outName = removeDot(argv[5], 1);
 
 
   // get dist data, flatten it to feed it to paralle job
   std::vector<std::vector<double>> dist;// note numsnap / numatom order
   std::string distFile;
-  if (thermoflag==1){ distFile = std::string("../data/cnnDist/") + dirName + "TD" + rho + "E" + fieldname + ".binary";}
-  else if (thermoflag==2){ distFile = std::string("../data/cnnDist/") + dirName + "TTD" + rho + "E" + fieldname + ".binary";}
-  else { distFile = std::string("../data/cnnDist/") + dirName + "D" + rho + "E" + fieldname + ".binary";}
+  distFile = std::string("../data/saveCNN/inner") + inName + "/" + dirName + "D" + rho + "E" + fieldname +  ".binary";
+  //distFile = std::string("../data/cnnDist/") + dirName + "D" + rho + "E" + fieldname + ".binary";
+  //if(cutoffflag>0) {
+  //  distFile = std::string("../data/saveCNN/inner") + inName + "/" + dirName + "D" + rho + "E" + fieldname +  ".binary";
+  //}
   dist=readBTrajFromFile(distFile);
   size_t numsnap = dist.size();
   size_t numatoms = dist[0].size();
 
   std::cout << "\nAnalysis Setups\n";
   std::cout << "data location: " << distFile << std::endl ; 
-  if(thermoflag == 1) { std::cout << "This trajectory was generated from partial Thermostat \n";}
-  else if(thermoflag == 2) { std::cout << "This trajectory was generated from solvent Thermostat \n";}
   std::cout << "numIons: " << numatoms << " numPairs: " << numatoms/2 << "\n";
   std::cout << "density of ions : " << density << "M \n";
   std::cout << "fieldStrength: " << field << " kcal/molA = " << field * fconversion << " mV/A" << "\n"; 
@@ -637,6 +641,9 @@ int main(int argc, char* argv[]) {
   std::cout << "qb\t" << cm.qb << "\t Error " << cm.Eqb << "\n";
   std::cout << "sum\n" << cm.qb + cm.qf << "\t\n";
 
+
+  std::cout << "population\npA\t" << cm.pA << "\t pB " << cm.pB << "\t pAB " << cm.pAB << "\n";
+
   auto mfptAB = findMFPTAB(innerBoundary, outerBoundary);
   std::cout << "MFPT AB mean : " << 1/mfptAB.mean * rateUnit << "\tError : " << mfptAB.error/mfptAB.mean/mfptAB.mean * rateUnit << "\n";
   std::cout << "compare with " << kr.mean * rateUnit/ cm.qb << "\tError : " << divisionError(kr.mean, kr.error, cm.qb, cm.Eqb) * rateUnit<< "\n";
@@ -649,9 +656,10 @@ int main(int argc, char* argv[]) {
 
   // generate output result
   std::string rateFile;
-  if(thermoflag==1) rateFile=std::string("../results/rata/") + dirName + "TD" + rho + "E" + fieldname + ".dat";
-  else if(thermoflag==2) rateFile=std::string("../results/rata/") + dirName + "TTD" + rho + "E" + fieldname + ".dat";
-  else rateFile=std::string("../results/rata/") + dirName + "D" + rho + "E" + fieldname + ".dat";
+  rateFile=std::string("../results/rate/") + dirName + "D" + rho + "E" + fieldname + ".dat";
+  if(cutoffflag>0) {
+    rateFile=std::string("../results/rate/inner") + inName + "/" + dirName + "D" + rho + "E" + fieldname + "O" + outName +  ".dat";
+  }
   std::ofstream out(rateFile );
   double rateAB = kr.mean * rateUnit / cm.qb;
   double ErateAB = divisionError(kr.mean, kr.error, cm.qb, cm.Eqb) * rateUnit;
@@ -663,7 +671,10 @@ int main(int argc, char* argv[]) {
     << kr.mean*rateUnit << "\t\t" << kr.error*rateUnit << "\t\t" 
     << rateAB << "\t\t" << ErateAB << "\t\t" 
     << rateBA << "\t\t" << ErateBA << "\t\t" 
-    << rateAB/cm.qb/density << "\t\t" << divisionError(rateAB, ErateAB, cm.qb, cm.Eqb)/density  
+    << rateAB/cm.qb/density << "\t\t" << divisionError(rateAB, ErateAB, cm.qb, cm.Eqb)/density  << "\t\t"
+    << cm.pA << "\t\t" << cm.pB << "\t\t" <<  cm.pAB << "\t\t"
+    << 1/mfptAB.mean * rateUnit << "\t\t" << mfptAB.error/mfptAB.mean/mfptAB.mean * rateUnit << "\t\t"
+    << 1/mfptBA.mean * rateUnit << "\t\t" << mfptBA.error/mfptBA.mean/mfptBA.mean * rateUnit << "\t\t"
     << "\n";
   out.close();
   std::cout << "\n\nSummary\n\n";
